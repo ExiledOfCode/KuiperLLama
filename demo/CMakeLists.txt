@@ -1,4 +1,3 @@
-
 add_executable(llama_infer main.cpp)
 target_link_directories(llama_infer PUBLIC ${PROJECT_SOURCE_DIR}/lib)
 target_link_libraries(llama_infer llama)
@@ -11,6 +10,18 @@ if (LLAMA3_SUPPORT)
 endif ()
 set_target_properties(llama_infer PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
+# 添加 chat_server（交互式推理服务）
+add_executable(chat_server chat_server.cpp)
+target_link_directories(chat_server PUBLIC ${PROJECT_SOURCE_DIR}/lib)
+target_link_libraries(chat_server llama)
+if (QWEN2_SUPPORT OR QWEN3_SUPPORT OR LLAMA3_SUPPORT)
+    find_package(absl REQUIRED)
+    find_package(re2 REQUIRED)
+    find_package(nlohmann_json REQUIRED)
+    target_link_libraries(chat_server absl::base re2::re2 nlohmann_json::nlohmann_json)
+endif ()
+set_target_properties(chat_server PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
 if (QWEN2_SUPPORT)
     message(STATUS "LINK QWEN2 SUPPORT")
     add_executable(qwen_infer main_qwen.cpp)
@@ -21,6 +32,13 @@ if (QWEN2_SUPPORT)
     target_link_libraries(qwen_infer llama)
     target_link_libraries(qwen_infer absl::base re2::re2 nlohmann_json::nlohmann_json)
     set_target_properties(qwen_infer PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    
+    # 添加 chat_qwen（Qwen 交互式聊天）
+    add_executable(chat_qwen chat_qwen.cpp)
+    target_link_directories(chat_qwen PUBLIC ${PROJECT_SOURCE_DIR}/lib)
+    target_link_libraries(chat_qwen llama)
+    target_link_libraries(chat_qwen absl::base re2::re2 nlohmann_json::nlohmann_json)
+    set_target_properties(chat_qwen PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 elseif (QWEN3_SUPPORT)
     message(STATUS "LINK QWEN3 SUPPORT")
     add_executable(qwen3_infer main_qwen3.cpp)

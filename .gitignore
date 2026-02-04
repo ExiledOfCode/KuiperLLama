@@ -1,0 +1,5 @@
+build/
+.vscode/
+model/
+lib/
+__pycache__/

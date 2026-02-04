@@ -106,7 +106,7 @@ python3 hf_infer/llama3_infer.py
 - 以 Qwen2.5-0.5B 为例，huggingface 上下载模型：
 ```shell
 export HF_ENDPOINT=https://hf-mirror.com
-pip3 install huggingface-cli
+pip3 install -U huggingface_hub
 huggingface-cli download --resume-download Qwen/Qwen2.5-0.5B --local-dir Qwen/Qwen2.5-0.5B --local-dir-use-symlinks False
 ```
 - 导出模型：
@@ -118,8 +118,9 @@ python3 tools/export_qwen2.py Qwen2.5-0.5B.bin --hf=Qwen/Qwen2.5-0.5B
 mkdir build 
 cd build
 # 开启 USE_CPM 选项，自动下载第三方依赖，前提是需要网络畅通
-cmake -DUSE_CPM=ON -DQWEN2_SUPPORT=ON .. 
-make -j16
+cmake -DQWEN2_SUPPORT=ON ..
+make -j$(nproc)
+make -j15
 ```
 - 运行：
 ```shell
