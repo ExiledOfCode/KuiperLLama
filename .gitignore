@@ -1,5 +1,5 @@
 build/
 .vscode/
-model/
+models/
 lib/
 __pycache__/

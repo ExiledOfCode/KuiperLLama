@@ -96,7 +96,7 @@ make -j16
 ```
 - 运行：
 ```shell
-./build/demo/llama_infer Llama-3.2-1B.bin meta-llama/Llama-3.2-1B/tokenizer.json
+./build/demo/llama_infer models/llama/stories110M.bin models/llama/tokenizer.model
 # 和 huggingface 推理的结果进行对比
 python3 hf_infer/llama3_infer.py
 ```
@@ -108,10 +108,12 @@ python3 hf_infer/llama3_infer.py
 export HF_ENDPOINT=https://hf-mirror.com
 pip3 install -U huggingface_hub
 huggingface-cli download --resume-download Qwen/Qwen2.5-0.5B --local-dir Qwen/Qwen2.5-0.5B --local-dir-use-symlinks False
+
+hf download Qwen/Qwen2.5-1.5B-Instruct --local-dir Qwen2.5-1.5B-Instruct
 ```
 - 导出模型：
 ```shell
-python3 tools/export_qwen2.py Qwen2.5-0.5B.bin --hf=Qwen/Qwen2.5-0.5B
+python3 tools/export_qwen2.py Qwen2.5-1.5B-Instruct/Qwen2.5-1.5B-Instruct.bin --hf=Qwen/Qwen2.5-1.5B-Instruct
 ```
 - 编译：
 ```shell
@@ -120,7 +122,7 @@ cd build
 # 开启 USE_CPM 选项，自动下载第三方依赖，前提是需要网络畅通
 cmake -DQWEN2_SUPPORT=ON ..
 make -j$(nproc)
-make -j15
+
 ```
 - 运行：
 ```shell
