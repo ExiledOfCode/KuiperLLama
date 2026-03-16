@@ -145,7 +145,13 @@ base::Status Model::create_encode_layer() {
 
   // create token encode decode layer
   if (tokenizer_type_ == TokenizerType::kEncodeSpe) {
+#if !defined(QWEN2_SUPPORT) && !defined(QWEN3_SUPPORT)
     encode_layer_ = std::make_unique<op::SpeEncodeLayer>(this->token_path_, true, false);
+#else
+    return error::InternalError(
+        "SentencePiece tokenizer is disabled in Qwen-only build. "
+        "Please use Qwen tokenizer JSON.");
+#endif
   } else {
 #ifdef LLAMA3_SUPPORT
     encode_layer_ = std::make_unique<op::BpeEncodeLayer>(this->token_path_, true, false);

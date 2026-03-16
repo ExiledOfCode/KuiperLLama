@@ -3,6 +3,7 @@
 #include "base/unicode.h"
 namespace op {
 
+#if !defined(QWEN2_SUPPORT) && !defined(QWEN3_SUPPORT)
 // EncodeLayer::EncodeLayer(
 //     base::DeviceType device_type,std::string token_model_path, bool has_bos, bool has_eos,
 //     : Layer(device_type, LayerType::kLayerEncode, "Encode"),
@@ -54,6 +55,7 @@ int32_t SpeEncodeLayer::vocab_size() const {
   CHECK(spe != nullptr);
   return spe->GetPieceSize();
 }
+#endif
 
 #if defined(LLAMA3_SUPPORT) || defined(QWEN2_SUPPORT) || defined(QWEN3_SUPPORT)
 static const std::string PAT_STR =

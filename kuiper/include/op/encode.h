@@ -1,7 +1,9 @@
 #ifndef KUIPER_INCLUDE_OP_ENCODE_H_
 #define KUIPER_INCLUDE_OP_ENCODE_H_
-#include <sentencepiece_processor.h>
 #include "layer.h"
+#if !defined(QWEN2_SUPPORT) && !defined(QWEN3_SUPPORT)
+#include <sentencepiece_processor.h>
+#endif
 #if defined (LLAMA3_SUPPORT) || defined (QWEN2_SUPPORT) || defined (QWEN3_SUPPORT)
 #include <absl/strings/str_join.h>
 #include <absl/strings/str_replace.h>
@@ -36,6 +38,7 @@ class EncodeLayerBase : public Layer {
   std::string token_model_path_;
 };
 
+#if !defined(QWEN2_SUPPORT) && !defined(QWEN3_SUPPORT)
 class SpeEncodeLayer : public EncodeLayerBase {
  public:
   explicit SpeEncodeLayer(std::string token_model_path, bool has_bos, bool has_eos);
@@ -53,6 +56,7 @@ class SpeEncodeLayer : public EncodeLayerBase {
  private:
   std::unique_ptr<sentencepiece::SentencePieceProcessor> spe;
 };
+#endif
 
 #if defined (LLAMA3_SUPPORT) || defined (QWEN2_SUPPORT) || defined (QWEN3_SUPPORT)
 class BpeEncodeLayer : public EncodeLayerBase {

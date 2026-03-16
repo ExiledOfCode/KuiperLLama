@@ -4,7 +4,6 @@
 #include <op/matmul.h>
 #include <op/mha.h>
 #include <op/rmsnorm.h>
-#include <sentencepiece_processor.h>
 #include <utility>
 #include "../op/kernels/cpu/rope_kernel.h"
 #include "../op/kernels/cuda/rope_kernel.cuh"

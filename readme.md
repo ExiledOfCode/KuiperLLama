@@ -120,8 +120,12 @@ python3 tools/export_qwen2.py Qwen2.5-1.5B-Instruct/Qwen2.5-1.5B-Instruct.bin --
 mkdir build 
 cd build
 # 开启 USE_CPM 选项，自动下载第三方依赖，前提是需要网络畅通
-cmake -DQWEN2_SUPPORT=ON ..
+cmake -DQWEN2_SUPPORT=ON -DQWEN3_SUPPORT=ON -DLLAMA3_SUPPORT=ON..
 make -j$(nproc)
+
+
+cmake -S KuiperLLama -B KuiperLLama/build -DUSE_CPM=OFF -DQWEN3_SUPPORT=ON -DQWEN2_SUPPORT=OFF -DLLAMA3_SUPPORT=OFF
+cmake --build KuiperLLama/build --target qwen3_infer -j$(nproc)
 
 ```
 - 运行：
@@ -136,3 +140,14 @@ python3 hf_infer/qwen2_infer.py
 1. tools/export_qwen3/load.py中导出为pth，模型的输入`model_name`和输出地址`output_file`依次需要填写；
 2. 导出pth格式的模型后，再用同文件夹下的write_bin.py导出qwen.bin；
 3. 用CMake选项`QWEN3_SUPPORT`重新编译项目，其他步骤就都是一样的了。
+
+```shell
+export HF_ENDPOINT=https://hf-mirror.com
+pip3 install -U huggingface_hub
+
+hf download Qwen/Qwen3-1.7B --local-dir Qwen3-1.7B
+```
+- 导出模型：
+```shell
+python ../tools/export_qwen3/write_bin.py -n /mnt/d/Project_Repository/Open_Source_Projects/MyInferenceEngine/KuiperLLama/models/Qwen3-4B-Instruct-2507 -d cuda
+```
