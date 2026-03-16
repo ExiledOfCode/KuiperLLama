@@ -1,13 +1,72 @@
 #include "model/qwen2.h"
+#include <algorithm>
+#include <chrono>
 #include <cuda_runtime_api.h>
 #include <glog/logging.h>
 #include <op/matmul.h>
 #include <op/mha.h>
 #include <op/rmsnorm.h>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 #include "../op/kernels/cpu/rope_kernel.h"
 #include "../op/kernels/cuda/rope_kernel.cuh"
 #include "base/tick.h"
+
+namespace {
+
+struct ProfileAccumulator {
+  double total_ms = 0.0;
+  int64_t calls = 0;
+};
+
+thread_local std::unordered_map<std::string, ProfileAccumulator> g_qwen2_op_profile;
+
+double elapsed_ms(const std::chrono::steady_clock::time_point& begin,
+                  const std::chrono::steady_clock::time_point& end) {
+  return std::chrono::duration<double, std::milli>(end - begin).count();
+}
+
+void record_profile(const char* op_name, double cost_ms) {
+  if (op_name == nullptr || *op_name == '\0') {
+    return;
+  }
+  auto& item = g_qwen2_op_profile[op_name];
+  item.total_ms += cost_ms;
+  item.calls += 1;
+}
+
+template <class Fn>
+base::Status run_profiled(const char* op_name, Fn&& fn) {
+  const auto begin = std::chrono::steady_clock::now();
+  base::Status status = fn();
+  const auto end = std::chrono::steady_clock::now();
+  record_profile(op_name, elapsed_ms(begin, end));
+  return status;
+}
+
+std::vector<model::OpProfileStat> snapshot_profile_stats() {
+  std::vector<model::OpProfileStat> stats;
+  stats.reserve(g_qwen2_op_profile.size());
+  for (const auto& [name, value] : g_qwen2_op_profile) {
+    model::OpProfileStat item;
+    item.op_name = name;
+    item.total_ms = value.total_ms;
+    item.calls = value.calls;
+    item.avg_ms = value.calls > 0 ? (value.total_ms / static_cast<double>(value.calls)) : 0.0;
+    stats.push_back(item);
+  }
+  std::sort(stats.begin(), stats.end(), [](const model::OpProfileStat& lhs, const model::OpProfileStat& rhs) {
+    if (lhs.total_ms == rhs.total_ms) {
+      return lhs.op_name < rhs.op_name;
+    }
+    return lhs.total_ms > rhs.total_ms;
+  });
+  return stats;
+}
+
+}  // namespace
+
 namespace model {
 
 void Qwen2Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config) {
@@ -586,7 +645,7 @@ void Qwen2Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) c
   if (!rmsnorm_layer) {
     LOG(FATAL) << "The attention rmsnorm layer is a null pointer in the llama2 model";
   }
-  STATUS_CHECK(rmsnorm_layer->forward(input, rmsnorm_output));
+  STATUS_CHECK(run_profiled("attn.rmsnorm", [&]() { return rmsnorm_layer->forward(input, rmsnorm_output); }));
 }
 
 void Qwen2Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_tensor) const {
@@ -601,23 +660,25 @@ void Qwen2Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_tens
   CHECK_NE(query_layer, nullptr) << "The query layer in the attention block is null pointer.";
 
   auto rmsnorm_output = get_buffer(ModelBufferType::kOutputRMSNorm);
-  STATUS_CHECK(query_layer->forward(rmsnorm_output, query));
+  STATUS_CHECK(run_profiled("attn.wq", [&]() { return query_layer->forward(rmsnorm_output, query); }));
 
   // key
   const auto& key_layer = qwen_layers_->wk_layers_.at(layer_idx);
   CHECK_NE(key_layer, nullptr) << "The key layer in the attention block is null pointer.";
-  STATUS_CHECK(key_layer->forward(rmsnorm_output, key));
+  STATUS_CHECK(run_profiled("attn.wk", [&]() { return key_layer->forward(rmsnorm_output, key); }));
   // value
   const auto& value_layer = qwen_layers_->wv_layers_.at(layer_idx);
   CHECK_NE(value_layer, nullptr) << "The value layer in the attention block is null pointer.";
-  STATUS_CHECK(value_layer->forward(rmsnorm_output, val));
+  STATUS_CHECK(run_profiled("attn.wv", [&]() { return value_layer->forward(rmsnorm_output, val); }));
 
   // rope
   CHECK_NE(qwen_layers_->rope_layer_, nullptr)
       << "The RoPE layer in the attention block is null pointer.";
-  STATUS_CHECK(qwen_layers_->rope_layer_->forward(
-      query, key, pos_tensor, get_buffer(ModelBufferType::kSinCache),
-      get_buffer(ModelBufferType::kCosCache), tensor::Tensor{}));
+  STATUS_CHECK(run_profiled("attn.rope", [&]() {
+    return qwen_layers_->rope_layer_->forward(query, key, pos_tensor,
+                                              get_buffer(ModelBufferType::kSinCache),
+                                              get_buffer(ModelBufferType::kCosCache), tensor::Tensor{});
+  }));
 }
 
 base::Status Qwen2Model::predict(const tensor::Tensor& input, const tensor::Tensor& pos_tensor,
@@ -647,13 +708,14 @@ void Qwen2Model::attention_mha(int32_t layer_idx, const tensor::Tensor& pos_tens
   int pos = pos_tensor.index<int32_t>(0);
   std::dynamic_pointer_cast<op::MultiHeadAttention>(mha_layer)->set_pos(pos);
   std::dynamic_pointer_cast<op::MultiHeadAttention>(mha_layer)->set_layer_idx(layer_idx);
-  STATUS_CHECK(mha_layer->forward(query, score_storage, key_cache, val_cache, mha_output));
+  STATUS_CHECK(
+      run_profiled("attn.mha", [&]() { return mha_layer->forward(query, score_storage, key_cache, val_cache, mha_output); }));
 
   // wo @ attention output
   tensor::Tensor attn_output = get_buffer(ModelBufferType::kAttnOutput);
   const auto& wo_layer = qwen_layers_->wo_layers_.at(layer_idx);
   CHECK_NE(wo_layer, nullptr) << "The weight output layer is null pointer.";
-  STATUS_CHECK(wo_layer->forward(mha_output, attn_output));
+  STATUS_CHECK(run_profiled("attn.wo", [&]() { return wo_layer->forward(mha_output, attn_output); }));
 }
 
 void Qwen2Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) const {
@@ -661,43 +723,46 @@ void Qwen2Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) co
   // residual add
   CHECK_NE(qwen_layers_->add_layer_, nullptr)
       << "The add layer in the feedforward block is null pointer";
-  STATUS_CHECK(
-      qwen_layers_->add_layer_->forward(input, get_buffer(ModelBufferType::kAttnOutput), input));
+  STATUS_CHECK(run_profiled("ffn.residual_add1", [&]() {
+    return qwen_layers_->add_layer_->forward(input, get_buffer(ModelBufferType::kAttnOutput), input);
+  }));
 
   // ffn rmsnorm
   tensor::Tensor ffn_norm_output = get_buffer(ModelBufferType::kFFNRMSNorm);
   const auto& ffn_rmsnorm = qwen_layers_->rmsnorm_layers_.at(layer_idx + config_->layer_num_);
   CHECK_NE(ffn_rmsnorm, nullptr)
       << "The final rmsnorm layer in the feedforward block is null pointer";
-  STATUS_CHECK(ffn_rmsnorm->forward(input, ffn_norm_output));
+  STATUS_CHECK(run_profiled("ffn.rmsnorm", [&]() { return ffn_rmsnorm->forward(input, ffn_norm_output); }));
 
   // w1
   tensor::Tensor w1_output = get_buffer(ModelBufferType::kW1Output);
   const auto& w1_layer = qwen_layers_->w1_layers_.at(layer_idx);
   CHECK_NE(w1_layer, nullptr) << "The w1 layer in the feedforward block is null pointer";
-  STATUS_CHECK(w1_layer->forward(ffn_norm_output, w1_output));
+  STATUS_CHECK(run_profiled("ffn.w1", [&]() { return w1_layer->forward(ffn_norm_output, w1_output); }));
 
   // w3
   tensor::Tensor w3_ouput = get_buffer(ModelBufferType::kW3Output);
   const auto& w3_layer = qwen_layers_->w3_layers_.at(layer_idx);
   CHECK_NE(w3_layer, nullptr) << "The w3 layer in the feedforward block is null pointer";
-  STATUS_CHECK(w3_layer->forward(ffn_norm_output, w3_ouput));
+  STATUS_CHECK(run_profiled("ffn.w3", [&]() { return w3_layer->forward(ffn_norm_output, w3_ouput); }));
 
   // SwiGLU
   CHECK_NE(qwen_layers_->swiglu_layer_, nullptr)
       << "The swiglu layer in the feedforward block is null pointer";
-  STATUS_CHECK(qwen_layers_->swiglu_layer_->forward(w1_output, w3_ouput, w1_output));
+  STATUS_CHECK(run_profiled("ffn.swiglu", [&]() {
+    return qwen_layers_->swiglu_layer_->forward(w1_output, w3_ouput, w1_output);
+  }));
 
   // w2
   tensor::Tensor w2_output = get_buffer(ModelBufferType::kW2Output);
   const auto& w2_layer = qwen_layers_->w2_layers_.at(layer_idx);
   CHECK_NE(w2_layer, nullptr) << "The w2 layer in the feedforward block is null pointer";
-  STATUS_CHECK(w2_layer->forward(w1_output, w2_output));
+  STATUS_CHECK(run_profiled("ffn.w2", [&]() { return w2_layer->forward(w1_output, w2_output); }));
 
   // residual add
   CHECK_NE(qwen_layers_->add_layer_, nullptr)
       << "The add layer in the feedforward block is null pointer";
-  STATUS_CHECK(qwen_layers_->add_layer_->forward(input, w2_output, input));
+  STATUS_CHECK(run_profiled("ffn.residual_add2", [&]() { return qwen_layers_->add_layer_->forward(input, w2_output, input); }));
 }
 
 op::EmbeddingOutput Qwen2Model::embedding(const std::vector<int>& tokens) const {
@@ -715,8 +780,9 @@ op::EmbeddingOutput Qwen2Model::embedding(const std::vector<int>& tokens) const 
       tensor::Tensor(base::DataType::kDataTypeInt32, static_cast<int32_t>(tokens.size()));
   LOG_IF(FATAL, !qwen_layers_->embedding_layer_)
       << "The embedding layer in the llama2 model is null pointer.";
-  STATUS_CHECK(
-      qwen_layers_->embedding_layer_->forward(input_tokens, input_token_num, input_embeddings));
+  STATUS_CHECK(run_profiled("input.embedding", [&]() {
+    return qwen_layers_->embedding_layer_->forward(input_tokens, input_token_num, input_embeddings);
+  }));
 
   op::EmbeddingOutput output(input_tokens, input_embeddings, input_token_num);
   return output;
@@ -727,11 +793,11 @@ void Qwen2Model::cls_logits(const tensor::Tensor& input) const {
   CHECK(qwen_layers_ != nullptr);
   const auto& norm = qwen_layers_->rmsnorm_layers_.at(2 * config_->layer_num_);
   CHECK_NE(norm, nullptr);
-  STATUS_CHECK(norm->forward(input, input));
+  STATUS_CHECK(run_profiled("output.rmsnorm", [&]() { return norm->forward(input, input); }));
 
   tensor::Tensor forward_output = get_buffer(ModelBufferType::kForwardOutput);
   CHECK_NE(qwen_layers_->cls_layer_, nullptr);
-  STATUS_CHECK(qwen_layers_->cls_layer_->forward(input, forward_output));
+  STATUS_CHECK(run_profiled("output.cls", [&]() { return qwen_layers_->cls_layer_->forward(input, forward_output); }));
 }
 
 int32_t Qwen2Model::post_processing(const tensor::Tensor& pos, bool is_prompt) const {
@@ -742,10 +808,17 @@ int32_t Qwen2Model::post_processing(const tensor::Tensor& pos, bool is_prompt) c
   if (is_prompt) {
     next = -1;
   } else {
-    next = static_cast<int32_t>(sampler_->sample(forward_logits, forward_output.size(),
-                                                 cuda_config_ ? cuda_config_->stream : nullptr));
+    const auto begin = std::chrono::steady_clock::now();
+    next = static_cast<int32_t>(
+        sampler_->sample(forward_logits, forward_output.size(), cuda_config_ ? cuda_config_->stream : nullptr));
+    const auto end = std::chrono::steady_clock::now();
+    record_profile("sampler.argmax", elapsed_ms(begin, end));
   }
   return next;
 }
+
+void Qwen2Model::reset_profile_stats() const { g_qwen2_op_profile.clear(); }
+
+std::vector<OpProfileStat> Qwen2Model::get_profile_stats() const { return snapshot_profile_stats(); }
 
 }  // namespace model
