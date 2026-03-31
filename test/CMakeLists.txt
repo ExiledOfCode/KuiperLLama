@@ -22,8 +22,12 @@ target_include_directories(test_llm PUBLIC ../kuiper/include)
 target_link_directories(test_llm PUBLIC ${PROJECT_SOURCE_DIR}/lib)
 if (LLAMA3_SUPPORT OR QWEN2_SUPPORT OR QWEN3_SUPPORT)
     message(STATUS "LINK LLM JSON/REGEX SUPPORT")
-    find_package(absl REQUIRED)
-    find_package(nlohmann_json REQUIRED)
+    if (NOT TARGET absl::base)
+        find_package(absl REQUIRED)
+    endif ()
+    if (NOT TARGET nlohmann_json::nlohmann_json)
+        find_package(nlohmann_json REQUIRED)
+    endif ()
 
     # Some distro packages (e.g. libre2-dev) do not ship re2Config.cmake.
     # Prefer CMake package, then fallback to pkg-config.

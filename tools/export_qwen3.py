@@ -272,7 +272,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-seq-len",
         type=int,
-        default=256,
+        default=4096,
         help="Exported max_seq_len in bin header (default: 4096).",
     )
     parser.add_argument(

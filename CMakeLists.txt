@@ -1,9 +1,22 @@
 cmake_minimum_required(VERSION 3.16)
-set(CMAKE_CUDA_ARCHITECTURES 86)
+if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  # Default to Ampere (e.g. RTX 30xx). Override with -DCMAKE_CUDA_ARCHITECTURES=...
+  set(CMAKE_CUDA_ARCHITECTURES 86)
+endif ()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Set the CUDA compiler path or name
-set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
+# CUDA compiler: do not hardcode a path that may not exist (common on apt-based installs).
+# Allow users to override via -DCMAKE_CUDA_COMPILER=...; otherwise try common defaults.
+if (NOT DEFINED CMAKE_CUDA_COMPILER)
+  if (EXISTS "/usr/local/cuda/bin/nvcc")
+    set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc" CACHE FILEPATH "CUDA compiler (nvcc)")
+  else ()
+    find_program(_NVCC nvcc)
+    if (_NVCC)
+      set(CMAKE_CUDA_COMPILER "${_NVCC}" CACHE FILEPATH "CUDA compiler (nvcc)")
+    endif ()
+  endif ()
+endif ()
 
 project(llama_infer CXX CUDA)
 include(cmake/cuda.cmake)
@@ -47,7 +60,7 @@ if(USE_CPM)
     NAME glog
     GITHUB_REPOSITORY google/glog
     VERSION 0.7.1
-    OPTIONS "BUILD_TESTING Off"
+    OPTIONS "BUILD_TESTING Off" "WITH_GFLAGS OFF" "WITH_GTEST OFF"
   )
 
   CPMAddPackage(
@@ -55,6 +68,12 @@ if(USE_CPM)
     GITLAB_REPOSITORY conradsnicta/armadillo-code
     GIT_TAG 14.0.1
   )
+
+  # sentencepiece v0.2.0 uses an old cmake_minimum_required; CMake >= 4.3
+  # requires an explicit policy version minimum to configure such subprojects.
+  if (NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Allow configuring subprojects requiring CMake < 3.5" FORCE)
+  endif ()
 
   CPMAddPackage(
     NAME sentencepiece
@@ -97,7 +116,10 @@ aux_source_directory(kuiper/source/op/kernels/cuda DIR_KERNEL_CUDA)
 aux_source_directory(kuiper/source/op/kernels/ DIR_KERNEL)
 aux_source_directory(kuiper/source/sampler DIR_SAMPLE)
 
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
+# Keep build artifacts inside the current build tree so different model-family
+# builds do not overwrite each other's shared library.
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 add_library(llama SHARED ${DIR_TENSOR} ${DIR_BASE} ${DIR_OP} ${DIR_KERNEL} ${DIR_MODEL} ${DIR_KERNEL_CPU} ${DIR_KERNEL_CUDA} ${DIR_KERNEL} ${DIR_SAMPLE})
 target_link_libraries(llama sentencepiece glog::glog gtest gtest_main pthread cudart armadillo)
@@ -113,6 +135,9 @@ if(USE_CPM)
   target_include_directories(llama PUBLIC ${sentencepiece_SOURCE_DIR}/src)
 endif()
 
-set_target_properties(llama PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(llama PROPERTIES
+  CUDA_SEPARABLE_COMPILATION ON
+  BUILD_RPATH ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
+)
 add_subdirectory(test)
 add_subdirectory(demo)
