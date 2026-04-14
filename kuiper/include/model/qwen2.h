@@ -10,13 +10,6 @@
 #include "op/swiglu.h"
 namespace model {
 
-struct OpProfileStat {
-  std::string op_name;
-  double total_ms = 0.0;
-  int64_t calls = 0;
-  double avg_ms = 0.0;
-};
-
 struct Qwen2Layers {
   std::shared_ptr<op::Layer> add_layer_;
   std::shared_ptr<op::Layer> rope_layer_;
@@ -53,6 +46,8 @@ class Qwen2Model : public Model {
                        int& next) const override;
 
   op::EmbeddingOutput embedding(const std::vector<int>& tokens) const override;
+
+  void set_profile_enabled(bool enabled) const;
 
   void reset_profile_stats() const;
 

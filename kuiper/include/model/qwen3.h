@@ -60,6 +60,12 @@ class Qwen3Model : public Model {
 
   op::EmbeddingOutput embedding(const std::vector<int>& tokens) const override;
 
+  void set_profile_enabled(bool enabled) const;
+
+  void reset_profile_stats() const;
+
+  std::vector<OpProfileStat> get_profile_stats() const;
+
  private:
   void init_mem() override;
 

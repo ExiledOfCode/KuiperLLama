@@ -21,6 +21,7 @@ struct ProfileAccumulator {
 };
 
 thread_local std::unordered_map<std::string, ProfileAccumulator> g_qwen2_op_profile;
+thread_local bool g_qwen2_profile_enabled = true;
 
 double elapsed_ms(const std::chrono::steady_clock::time_point& begin,
                   const std::chrono::steady_clock::time_point& end) {
@@ -28,7 +29,7 @@ double elapsed_ms(const std::chrono::steady_clock::time_point& begin,
 }
 
 void record_profile(const char* op_name, double cost_ms) {
-  if (op_name == nullptr || *op_name == '\0') {
+  if (!g_qwen2_profile_enabled || op_name == nullptr || *op_name == '\0') {
     return;
   }
   auto& item = g_qwen2_op_profile[op_name];
@@ -817,8 +818,20 @@ int32_t Qwen2Model::post_processing(const tensor::Tensor& pos, bool is_prompt) c
   return next;
 }
 
+void Qwen2Model::set_profile_enabled(bool enabled) const {
+  g_qwen2_profile_enabled = enabled;
+  if (!enabled) {
+    g_qwen2_op_profile.clear();
+  }
+}
+
 void Qwen2Model::reset_profile_stats() const { g_qwen2_op_profile.clear(); }
 
-std::vector<OpProfileStat> Qwen2Model::get_profile_stats() const { return snapshot_profile_stats(); }
+std::vector<OpProfileStat> Qwen2Model::get_profile_stats() const {
+  if (!g_qwen2_profile_enabled) {
+    return {};
+  }
+  return snapshot_profile_stats();
+}
 
 }  // namespace model

@@ -1,5 +1,6 @@
 #ifndef KUIPER_INCLUDE_MODEL_MODEL_H_
 #define KUIPER_INCLUDE_MODEL_MODEL_H_
+#include <cstdint>
 #include <op/embedding.h>
 #include <map>
 #include <string>
@@ -11,6 +12,13 @@
 #include "tensor/tensor.h"
 
 namespace model {
+struct OpProfileStat {
+  std::string op_name;
+  double total_ms = 0.0;
+  int64_t calls = 0;
+  double avg_ms = 0.0;
+};
+
 class Model {
  public:
   explicit Model(base::TokenizerType tokenizer_type, base::ModelType model_type,

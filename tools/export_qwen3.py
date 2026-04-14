@@ -2,8 +2,9 @@
 """
 Export Qwen3 HuggingFace safetensors weights to KuiperLLama .bin format.
 
-Default behavior targets:
-  KuiperLLama/models/Qwen3-4B-Instruct-2507
+Usage examples:
+  python3 tools/export_qwen3.py models/Qwen3-1.7B/Qwen3-1.7B.bin --hf=models/Qwen3-1.7B
+  python3 tools/export_qwen3.py --output models/Qwen3-1.7B/Qwen3-1.7B.bin --model-dir=models/Qwen3-1.7B
 
 Output weight order follows `kuiper/source/model/qwen3.cpp`:
   1) input_layernorm (all layers)
@@ -35,8 +36,8 @@ import torch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL_DIR = ROOT_DIR / "models" / "Qwen3-4B-Instruct-2507"
-DEFAULT_OUTPUT = DEFAULT_MODEL_DIR / "Qwen3-4B-Instruct-2507.bin"
+DEFAULT_MODEL_DIR = ROOT_DIR / "models" / "Qwen3-1.7B"
+DEFAULT_OUTPUT = DEFAULT_MODEL_DIR / "Qwen3-1.7B.bin"
 
 
 def serialize_fp32(file_obj, tensor: torch.Tensor) -> None:
@@ -258,22 +259,35 @@ def parse_args() -> argparse.Namespace:
         description="Export Qwen3 HuggingFace safetensors to KuiperLLama .bin"
     )
     parser.add_argument(
-        "--model-dir",
+        "filepath",
+        nargs="?",
         type=Path,
-        default=DEFAULT_MODEL_DIR,
-        help=f"Qwen3 model directory (default: {DEFAULT_MODEL_DIR})",
+        help="the output filepath, compatible with export_qwen2.py style",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT,
-        help=f"Output .bin path (default: {DEFAULT_OUTPUT})",
+        default=None,
+        help="Output .bin path. If omitted, use positional filepath or the default output path.",
+    )
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument(
+        "--hf",
+        type=Path,
+        default=None,
+        help="HuggingFace/local model directory containing config.json and safetensors files.",
+    )
+    group.add_argument(
+        "--model-dir",
+        type=Path,
+        default=None,
+        help="Alias of --hf.",
     )
     parser.add_argument(
         "--max-seq-len",
         type=int,
         default=256,
-        help="Exported max_seq_len in bin header (default: 4096).",
+        help="Exported max_seq_len in bin header (default: 256).",
     )
     parser.add_argument(
         "--overwrite",
@@ -295,10 +309,13 @@ def main() -> int:
         print("Error: --max-seq-len must be > 0", file=sys.stderr)
         return 2
 
+    model_dir = args.hf or args.model_dir or DEFAULT_MODEL_DIR
+    output_path = args.output or args.filepath or DEFAULT_OUTPUT
+
     try:
         export_qwen3_bin(
-            model_dir=args.model_dir,
-            output_path=args.output,
+            model_dir=model_dir,
+            output_path=output_path,
             max_seq_len=args.max_seq_len,
             overwrite=args.overwrite,
             check_only=args.check_only,
