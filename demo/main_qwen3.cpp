@@ -23,9 +23,9 @@
 namespace {
 
 using json = nlohmann::json;
-constexpr size_t kTraceTokenPreviewLimit = 24;
-constexpr size_t kTraceTextPreviewLimit = 280;
-constexpr int kTraceSamplingPreviewLimit = 8;
+constexpr size_t kTraceTokenPreviewLimit = 256;
+constexpr size_t kTraceTextPreviewLimit = 4096;
+constexpr int kTraceSamplingPreviewLimit = 128;
 
 struct GenerationResult {
   std::string response;
