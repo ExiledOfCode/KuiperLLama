@@ -137,9 +137,8 @@ python3 hf_infer/qwen2_infer.py
 
 ## Qwen3推理
 和上面同理，我们先从huggingface仓库中将模型下载到本地。
-1. tools/export_qwen3/load.py中导出为pth，模型的输入`model_name`和输出地址`output_file`依次需要填写；
-2. 导出pth格式的模型后，再用同文件夹下的write_bin.py导出qwen.bin；
-3. 用CMake选项`QWEN3_SUPPORT`重新编译项目，其他步骤就都是一样的了。
+当前仓库已经提供 `tools/export_qwen3.py`，可以直接把 HuggingFace safetensors 导出成 Kuiper 的 `.bin`。
+如果目标环境 CUDA 不支持原生 `bf16` 推理，加载器会在读取 `bf16` 权重文件时自动转成 `fp32` 再执行，因此不需要额外改 CUDA kernel。
 
 ```shell
 export HF_ENDPOINT=https://hf-mirror.com
@@ -149,5 +148,6 @@ hf download Qwen/Qwen3-1.7B --local-dir Qwen3-1.7B
 ```
 - 导出模型：
 ```shell
-python ../tools/export_qwen3/write_bin.py -n /mnt/d/Project_Repository/Open_Source_Projects/MyInferenceEngine/KuiperLLama/models/Qwen3-4B-Instruct-2507 -d cuda
+python3 tools/export_qwen3.py --model-dir Qwen3-1.7B --output Qwen3-1.7B/Qwen3-1.7B.bin --dtype fp32
+python3 tools/export_qwen3.py --model-dir Qwen3-1.7B --output Qwen3-1.7B/Qwen3-1.7B-bf16.bin --dtype bf16
 ```

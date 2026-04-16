@@ -3,6 +3,28 @@
 #include "kernels/kernels_interface.h"
 #include "op/layer.h"
 namespace op {
+namespace {
+
+base::Status check_embedding_weight(const tensor::Tensor& tensor, base::DeviceType device_type,
+                                    int32_t vocab_size, int32_t dim) {
+  if (tensor.is_empty()) {
+    return base::error::InvalidArgument("The tensor parameter is empty.");
+  }
+  if (tensor.device_type() != device_type) {
+    return base::error::InvalidArgument("The tensor has a wrong device type.");
+  }
+  if (tensor.data_type() != base::DataType::kDataTypeFp32 &&
+      tensor.data_type() != base::DataType::kDataTypeBf16) {
+    return base::error::InvalidArgument("The tensor has an unsupported weight data type.");
+  }
+  if (tensor.dims_size() != 2 || tensor.get_dim(0) != vocab_size || tensor.get_dim(1) != dim) {
+    return base::error::InvalidArgument("The tensor has a wrong dim.");
+  }
+  return base::error::Success();
+}
+
+}  // namespace
+
 EmbeddingLayer::EmbeddingLayer(base::DeviceType device_type, int32_t dim, int32_t seq_len,
                                int32_t vocab_size)
     : dim_(dim),
@@ -28,7 +50,7 @@ base::Status EmbeddingLayer::check() const {
     return status;
   }
 
-  status = check_tensor_with_dim(get_weight(0), device_type_, data_type_, vocab_size_, dim_);
+  status = check_embedding_weight(get_weight(0), device_type_, vocab_size_, dim_);
   if (!status) {
     LOG(ERROR) << "The weight tensor error in the embedding layer.";
     return status;

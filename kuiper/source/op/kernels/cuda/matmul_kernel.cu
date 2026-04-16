@@ -1,8 +1,55 @@
 #include <tensor/tensor.h>
+#include <cuda_bf16.h>
 #include <cub/block/block_reduce.cuh>
 #include "../kernels_interface.h"
 #include "matmul_kernel.cuh"
 namespace kernel {
+template <typename T>
+__device__ inline float to_float_device(T value);
+
+template <>
+__device__ inline float to_float_device<float>(float value) {
+  return value;
+}
+
+template <>
+__device__ inline float to_float_device<__nv_bfloat16>(__nv_bfloat16 value) {
+  return __bfloat162float(value);
+}
+
+template <typename WeightT, int THREAD_PER_BLOCK, int ROW_PER_BLOCK>
+__global__ void matmul_kernel_cu_mixed(const float* input, const WeightT* weight, float* output,
+                                       int M, int K) {
+  __shared__ float sdata[THREAD_PER_BLOCK];
+  unsigned int tid = threadIdx.x;
+
+  int start_row = blockIdx.x * ROW_PER_BLOCK;
+  int end_row = start_row + ROW_PER_BLOCK;
+  if (start_row >= K) {
+    return;
+  }
+
+#pragma unroll
+  for (int p = start_row; p < end_row; ++p) {
+    sdata[tid] = 0.f;
+    int row_offset = p * M;
+    for (int i = tid; i < M; i += blockDim.x) {
+      sdata[tid] += input[i] * to_float_device(weight[row_offset + i]);
+    }
+
+    __syncthreads();
+    using BlockReduce = cub::BlockReduce<float, THREAD_PER_BLOCK>;
+    __shared__ typename BlockReduce::TempStorage temp;
+    float part_sum = BlockReduce(temp).Sum(sdata[tid]);
+    __syncthreads();
+
+    if (tid == 0) {
+      output[p] = part_sum;
+    }
+    __syncthreads();
+  }
+}
+
 template <int THREAD_PER_BLOCK, int ROW_PER_BLOCK>
 __global__ void matmul_kernel_cu_fp32(const float* input, const float* weight, float* output, int M,
                                       int K) {
@@ -99,12 +146,24 @@ void matmul_kernel_cu(const tensor::Tensor& input, const tensor::Tensor& weight,
   // CHECK_EQ(M % packet_size, 0);
 
   CHECK_EQ(M, input.get_dim(0));
-  if (config && config->stream) {
-    matmul_kernel_cu_fp32<128, 1><<<K, 128, 0, config->stream>>>(
-        input.ptr<float>(), weight.ptr<float>(), const_cast<float*>(output.ptr<float>()), M, K);
+  if (weight.data_type() == base::DataType::kDataTypeBf16) {
+    const __nv_bfloat16* weight_ptr =
+        reinterpret_cast<const __nv_bfloat16*>(weight.ptr<uint16_t>());
+    if (config && config->stream) {
+      matmul_kernel_cu_mixed<__nv_bfloat16, 128, 1><<<K, 128, 0, config->stream>>>(
+          input.ptr<float>(), weight_ptr, const_cast<float*>(output.ptr<float>()), M, K);
+    } else {
+      matmul_kernel_cu_mixed<__nv_bfloat16, 128, 1><<<K, 128>>>(
+          input.ptr<float>(), weight_ptr, const_cast<float*>(output.ptr<float>()), M, K);
+    }
   } else {
-    matmul_kernel_cu_fp32<128, 1><<<K, 128>>>(input.ptr<float>(), weight.ptr<float>(),
-                                              const_cast<float*>(output.ptr<float>()), M, K);
+    if (config && config->stream) {
+      matmul_kernel_cu_fp32<128, 1><<<K, 128, 0, config->stream>>>(
+          input.ptr<float>(), weight.ptr<float>(), const_cast<float*>(output.ptr<float>()), M, K);
+    } else {
+      matmul_kernel_cu_fp32<128, 1><<<K, 128>>>(input.ptr<float>(), weight.ptr<float>(),
+                                                const_cast<float*>(output.ptr<float>()), M, K);
+    }
   }
 }
 

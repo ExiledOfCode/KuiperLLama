@@ -1,8 +1,31 @@
 #include "model/model.h"
+#include <cstdio>
+#include <cuda_runtime_api.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 namespace model {
+namespace {
+
+bool cuda_device_supports_bf16() {
+  int device = 0;
+  cudaError_t err = cudaGetDevice(&device);
+  if (err != cudaSuccess) {
+    LOG(WARNING) << "Failed to query current CUDA device: " << cudaGetErrorString(err);
+    return false;
+  }
+
+  cudaDeviceProp prop{};
+  err = cudaGetDeviceProperties(&prop, device);
+  if (err != cudaSuccess) {
+    LOG(WARNING) << "Failed to query CUDA device properties: " << cudaGetErrorString(err);
+    return false;
+  }
+  return prop.major >= 8;
+}
+
+}  // namespace
+
 Model::Model(base::TokenizerType tokenizer_type, base::ModelType model_type, std::string token_path,
              std::string model_path, bool is_quant_model)
     : tokenizer_type_(tokenizer_type),
@@ -38,6 +61,8 @@ const tensor::Tensor& Model::get_buffer(ModelBufferType buffer_idx) const {
   return buffers_.at(buffer_idx);
 }
 
+bool Model::has_buffer(ModelBufferType buffer_idx) const { return buffers_.count(buffer_idx) > 0; }
+
 base::Status Model::read_model_file() {
   using namespace base;
   if (model_path_.empty()) {
@@ -51,32 +76,85 @@ base::Status Model::read_model_file() {
 
   FILE* file = fopen(model_path_.data(), "rb");
   if (!file) {
+    close(fd);
     return error::PathNotValid("Failed to open the file. The path may be invalid.");
   }
 
+  ModelFileHeader file_header{};
   auto config = ModelConfig{};
-  if (fread(&config, sizeof(ModelConfig), 1, file) != 1) {
-    return error::ModelParseError(
-        "Failed to retrieve the configuration information from the model "
-        "file.");
+  size_t weight_data_offset = 0;
+
+  if (fread(&file_header, sizeof(ModelFileHeader), 1, file) == 1 &&
+      file_header.magic == kModelFileMagic) {
+    if (file_header.version != kModelFileVersion) {
+      fclose(file);
+      close(fd);
+      return error::ModelParseError("Unsupported model file header version.");
+    }
+    weight_type_ = static_cast<base::WeightType>(file_header.weight_type);
+    if (fread(&config, sizeof(ModelConfig), 1, file) != 1) {
+      fclose(file);
+      close(fd);
+      return error::ModelParseError(
+          "Failed to retrieve the configuration information from the model "
+          "file.");
+    }
+    weight_data_offset = sizeof(ModelFileHeader) + sizeof(ModelConfig);
+  } else {
+    std::rewind(file);
+    weight_type_ = is_quant_model_ ? base::WeightType::kWeightTypeInt8
+                                   : base::WeightType::kWeightTypeFp32;
+    if (fread(&config, sizeof(ModelConfig), 1, file) != 1) {
+      fclose(file);
+      close(fd);
+      return error::ModelParseError(
+          "Failed to retrieve the configuration information from the model "
+          "file.");
+    }
+    weight_data_offset = sizeof(ModelConfig);
   }
-  if (is_quant_model_) {
+
+  if (weight_type_ == base::WeightType::kWeightTypeInt8 && !is_quant_model_) {
+    fclose(file);
+    close(fd);
+    return error::ModelParseError("The model file is int8 quantized but infer is not in quant mode.");
+  }
+  if (weight_type_ != base::WeightType::kWeightTypeInt8 && is_quant_model_) {
+    fclose(file);
+    close(fd);
+    return error::ModelParseError("The model file is not int8 quantized but infer is in quant mode.");
+  }
+
+  if (weight_type_ == base::WeightType::kWeightTypeInt8) {
     if (fread(&group_size_, sizeof(int32_t), 1, file) != 1) {
+      fclose(file);
+      close(fd);
       return error::ModelParseError(
           "Failed to retrieve the group size information from the model "
           "file.");
     }
+    weight_data_offset += sizeof(group_size_);
   }
+  fclose(file);
 
   auto gen_status = generate_model_infos(config);
   if (!gen_status) {
+    close(fd);
     return gen_status;
   }
 
-  if (!is_quant_model_) {
+  if (weight_type_ == base::WeightType::kWeightTypeFp32) {
     raw_model_data_ = std::make_shared<RawModelDataFp32>();
-  } else {
+    weight_data_type_ = base::DataType::kDataTypeFp32;
+  } else if (weight_type_ == base::WeightType::kWeightTypeInt8) {
     raw_model_data_ = std::make_shared<RawModelDataInt8>();
+    weight_data_type_ = base::DataType::kDataTypeInt8;
+  } else if (weight_type_ == base::WeightType::kWeightTypeBf16) {
+    raw_model_data_ = std::make_shared<RawModelDataBf16>();
+    weight_data_type_ = base::DataType::kDataTypeBf16;
+  } else {
+    close(fd);
+    return error::ModelParseError("Unsupported weight type in model file.");
   }
 
   struct stat sb;
@@ -95,12 +173,29 @@ base::Status Model::read_model_file() {
   if (raw_model_data_->data == MAP_FAILED || raw_model_data_->data == nullptr) {
     return error::ModelParseError("Failed to map the weight file " + model_path_ + " into memory.");
   }
-  if (!is_quant_model_) {
-    raw_model_data_->weight_data =
-        static_cast<int8_t*>(raw_model_data_->data) + sizeof(ModelConfig);
+  if (weight_type_ == base::WeightType::kWeightTypeFp32 ||
+      weight_type_ == base::WeightType::kWeightTypeInt8) {
+    raw_model_data_->weight_data = static_cast<int8_t*>(raw_model_data_->data) + weight_data_offset;
   } else {
-    raw_model_data_->weight_data =
-        static_cast<int8_t*>(raw_model_data_->data) + sizeof(ModelConfig) + sizeof(group_size_);
+    const size_t payload_bytes = raw_model_data_->file_size - weight_data_offset;
+    if (payload_bytes % sizeof(uint16_t) != 0) {
+      return error::ModelParseError("The bf16 model payload is malformed.");
+    }
+    auto bf16_data = std::static_pointer_cast<RawModelDataBf16>(raw_model_data_);
+    const auto* source = reinterpret_cast<const uint16_t*>(
+        static_cast<int8_t*>(raw_model_data_->data) + weight_data_offset);
+    if (device_type_ == base::DeviceType::kDeviceCUDA && cuda_device_supports_bf16()) {
+      bf16_data->use_source_weights(source);
+      weight_data_type_ = base::DataType::kDataTypeBf16;
+      LOG(INFO) << "Enable native CUDA BF16 weight path for model: " << model_path_;
+    } else {
+      bf16_data->load_from_bf16(source, payload_bytes / sizeof(uint16_t));
+      weight_data_type_ = base::DataType::kDataTypeFp32;
+      if (device_type_ == base::DeviceType::kDeviceCUDA) {
+        LOG(WARNING) << "Current CUDA device does not support native BF16. "
+                     << "Fallback to fp32 weights for model: " << model_path_;
+      }
+    }
   }
   if (raw_model_data_ == nullptr) {
     LOG(ERROR);

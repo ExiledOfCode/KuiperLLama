@@ -1,10 +1,21 @@
 #include <device_launch_parameters.h>
+#include <cuda_bf16.h>
 #include <cub/block/block_reduce.cuh>
 #include "rmsnorm_kernel.cuh"
 namespace kernel {
-/**
- * 计算多维输入 in = (dim1, dim2), 计算在dim2维度上的rmsnorm
- */
+template <typename T>
+__device__ inline float rmsnorm_to_float(T value);
+
+template <>
+__device__ inline float rmsnorm_to_float<float>(float value) {
+  return value;
+}
+
+template <>
+__device__ inline float rmsnorm_to_float<__nv_bfloat16>(__nv_bfloat16 value) {
+  return __bfloat162float(value);
+}
+
 static __global__ void row_rmsnorm_f32_dim(float* in, float* wei, float* out, int dim_size,
                                            int size, float eps) {
   const int bid = blockIdx.x;
@@ -107,6 +118,65 @@ static __global__ void row_rmsnorm_f32(float* in, float* wei, float* out, int si
   }
 }
 
+template <typename WeightT>
+static __global__ void row_rmsnorm_f32_dim_mixed(float* in, const WeightT* wei, float* out,
+                                                 int dim_size, int size, float eps) {
+  const int bid = blockIdx.x;
+  const int tid = threadIdx.x;
+  if (bid >= dim_size) {
+    return;
+  }
+
+  float* block_in = in + bid * size;
+  float* block_out = out + bid * size;
+
+  float sum = 0.0f;
+  for (int i = tid; i < size; i += blockDim.x) {
+    sum += block_in[i] * block_in[i];
+  }
+
+  using BlockReduce = cub::BlockReduce<float, 128>;
+  __shared__ typename BlockReduce::TempStorage temp;
+  __shared__ float shared_val;
+  sum = BlockReduce(temp).Sum(sum);
+  if (threadIdx.x == 0) {
+    shared_val = sum;
+  }
+  __syncthreads();
+  sum = shared_val;
+  const float scale = rsqrtf(sum / static_cast<float>(size) + eps);
+
+  for (int i = tid; i < size; i += blockDim.x) {
+    block_out[i] = rmsnorm_to_float(wei[i]) * block_in[i] * scale;
+  }
+}
+
+template <typename WeightT, int32_t BLOCK_DIM>
+static __global__ void row_rmsnorm_f32_mixed(float* in, const WeightT* wei, float* out, int size,
+                                             float eps) {
+  const int tid = threadIdx.x;
+
+  float sum = 0.0f;
+  for (int i = tid; i < size; i += blockDim.x) {
+    sum += in[i] * in[i];
+  }
+
+  using BlockReduce = cub::BlockReduce<float, BLOCK_DIM>;
+  __shared__ typename BlockReduce::TempStorage temp;
+  __shared__ float shared_val;
+  sum = BlockReduce(temp).Sum(sum);
+  if (threadIdx.x == 0) {
+    shared_val = sum;
+  }
+  __syncthreads();
+  sum = shared_val;
+  const float scale = rsqrtf(sum / static_cast<float>(size) + eps);
+
+  for (int i = tid; i < size; i += blockDim.x) {
+    out[i] = rmsnorm_to_float(wei[i]) * in[i] * scale;
+  }
+}
+
 void rmsnorm_kernel_cu(const tensor::Tensor& input, const tensor::Tensor& weight,
                        const tensor::Tensor& output, void* stream) {
   CHECK(!input.is_empty());
@@ -124,19 +194,33 @@ void rmsnorm_kernel_cu(const tensor::Tensor& input, const tensor::Tensor& weight
 #endif
   const int32_t size = static_cast<int32_t>(input.size());
   float* in_ptr = const_cast<float*>(input.ptr<float>());
-  float* wei_ptr = const_cast<float*>(weight.ptr<float>());
   float* out_ptr = const_cast<float*>(output.ptr<float>());
   constexpr int threads_num = 128;
-  if (stream) {
-    cudaStream_t stream_ = static_cast<cudaStream_t>(stream);
-    row_rmsnorm_f32<128><<<1, threads_num, 0, stream_>>>(in_ptr, wei_ptr, out_ptr, size, eps);
+  if (weight.data_type() == base::DataType::kDataTypeBf16) {
+    const __nv_bfloat16* wei_ptr =
+        reinterpret_cast<const __nv_bfloat16*>(weight.ptr<uint16_t>());
+    if (stream) {
+      cudaStream_t stream_ = static_cast<cudaStream_t>(stream);
+      row_rmsnorm_f32_mixed<__nv_bfloat16, 128><<<1, threads_num, 0, stream_>>>(in_ptr, wei_ptr,
+                                                                                 out_ptr, size, eps);
+    } else {
+      row_rmsnorm_f32_mixed<__nv_bfloat16, 128><<<1, threads_num>>>(in_ptr, wei_ptr, out_ptr, size,
+                                                                    eps);
+    }
   } else {
-    row_rmsnorm_f32<128><<<1, threads_num>>>(in_ptr, wei_ptr, out_ptr, size, eps);
+    float* wei_ptr = const_cast<float*>(weight.ptr<float>());
+    if (stream) {
+      cudaStream_t stream_ = static_cast<cudaStream_t>(stream);
+      row_rmsnorm_f32<128><<<1, threads_num, 0, stream_>>>(in_ptr, wei_ptr, out_ptr, size, eps);
+    } else {
+      row_rmsnorm_f32<128><<<1, threads_num>>>(in_ptr, wei_ptr, out_ptr, size, eps);
+    }
   }
 }
 
 void rmsnorm_kernel_cu_dim(const tensor::Tensor& input, const tensor::Tensor& weight,
                            const tensor::Tensor& output, int32_t dim, void* stream) {
+  UNUSED(dim);
   CHECK(!input.is_empty());
   CHECK(!weight.is_empty());
   CHECK(!output.is_empty());
@@ -151,15 +235,29 @@ void rmsnorm_kernel_cu_dim(const tensor::Tensor& input, const tensor::Tensor& we
   const int32_t dim_size = total_size / size;
 
   float* in_ptr = const_cast<float*>(input.ptr<float>());
-  float* wei_ptr = const_cast<float*>(weight.ptr<float>());
   float* out_ptr = const_cast<float*>(output.ptr<float>());
   constexpr int threads_num = 128;
-  if (stream) {
-    cudaStream_t stream_ = static_cast<cudaStream_t>(stream);
-    row_rmsnorm_f32_dim<<<dim_size, threads_num, 0, stream_>>>(in_ptr, wei_ptr, out_ptr, dim_size,
-                                                               size, eps);
+  if (weight.data_type() == base::DataType::kDataTypeBf16) {
+    const __nv_bfloat16* wei_ptr =
+        reinterpret_cast<const __nv_bfloat16*>(weight.ptr<uint16_t>());
+    if (stream) {
+      cudaStream_t stream_ = static_cast<cudaStream_t>(stream);
+      row_rmsnorm_f32_dim_mixed<<<dim_size, threads_num, 0, stream_>>>(in_ptr, wei_ptr, out_ptr,
+                                                                        dim_size, size, eps);
+    } else {
+      row_rmsnorm_f32_dim_mixed<<<dim_size, threads_num>>>(in_ptr, wei_ptr, out_ptr, dim_size,
+                                                           size, eps);
+    }
   } else {
-    row_rmsnorm_f32_dim<<<dim_size, threads_num>>>(in_ptr, wei_ptr, out_ptr, dim_size, size, eps);
+    float* wei_ptr = const_cast<float*>(weight.ptr<float>());
+    if (stream) {
+      cudaStream_t stream_ = static_cast<cudaStream_t>(stream);
+      row_rmsnorm_f32_dim<<<dim_size, threads_num, 0, stream_>>>(in_ptr, wei_ptr, out_ptr,
+                                                                 dim_size, size, eps);
+    } else {
+      row_rmsnorm_f32_dim<<<dim_size, threads_num>>>(in_ptr, wei_ptr, out_ptr, dim_size, size,
+                                                     eps);
+    }
   }
 }
 }  // namespace kernel

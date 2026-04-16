@@ -4,6 +4,28 @@
 #include "kernels/cpu/rmsnorm_kernel.h"
 #include "kernels/kernels_interface.h"
 namespace op {
+namespace {
+
+base::Status check_rmsnorm_weight(const tensor::Tensor& tensor, base::DeviceType device_type,
+                                  int32_t dim) {
+  if (tensor.is_empty()) {
+    return base::error::InvalidArgument("The tensor parameter is empty.");
+  }
+  if (tensor.device_type() != device_type) {
+    return base::error::InvalidArgument("The tensor has a wrong device type.");
+  }
+  if (tensor.data_type() != base::DataType::kDataTypeFp32 &&
+      tensor.data_type() != base::DataType::kDataTypeBf16) {
+    return base::error::InvalidArgument("The tensor has an unsupported weight data type.");
+  }
+  if (tensor.dims_size() != 1 || tensor.get_dim(0) != dim) {
+    return base::error::InvalidArgument("The tensor has a wrong dim.");
+  }
+  return base::error::Success();
+}
+
+}  // namespace
+
 RmsNormLayer::RmsNormLayer(base::DeviceType device_type, int32_t dim)
     : LayerParam(device_type, LayerType::kLayerRMSNorm, false, "RMSNorm"), dim_(dim) {
   reset_input_size(1);
@@ -49,7 +71,7 @@ base::Status RmsNormLayer::check() const {
       return status;
     }
 
-    status = check_tensor_with_dim(get_weight(0), device_type_, data_type_, dim_);
+    status = check_rmsnorm_weight(get_weight(0), device_type_, dim_);
     if (!status) {
       LOG(ERROR) << "The weight tensor error in the rmsnorm layer.";
       return status;

@@ -2,6 +2,7 @@
 #define RAW_MODEL_DATA_H
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 namespace model {
 struct RawModelData {
   ~RawModelData();
@@ -19,6 +20,17 @@ struct RawModelDataFp32 : RawModelData {
 
 struct RawModelDataInt8 : RawModelData {
   const void* weight(size_t offset) const override;
+};
+
+struct RawModelDataBf16 : RawModelData {
+  void load_from_bf16(const uint16_t* source, size_t count);
+
+  void use_source_weights(const uint16_t* source);
+
+  const void* weight(size_t offset) const override;
+
+  const uint16_t* source_weights = nullptr;
+  std::vector<float> converted_weights;
 };
 
 }  // namespace model

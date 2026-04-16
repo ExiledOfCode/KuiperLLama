@@ -2,6 +2,28 @@
 #include "kernels/cpu/matmul_kernel.h"
 #include "kernels/kernels_interface.h"
 namespace op {
+namespace {
+
+base::Status check_weight_tensor(const tensor::Tensor& tensor, base::DeviceType device_type,
+                                 int32_t dim0, int32_t dim1) {
+  if (tensor.is_empty()) {
+    return base::error::InvalidArgument("The tensor parameter is empty.");
+  }
+  if (tensor.device_type() != device_type) {
+    return base::error::InvalidArgument("The tensor has a wrong device type.");
+  }
+  if (tensor.data_type() != base::DataType::kDataTypeFp32 &&
+      tensor.data_type() != base::DataType::kDataTypeBf16) {
+    return base::error::InvalidArgument("The tensor has an unsupported weight data type.");
+  }
+  if (tensor.dims_size() != 2 || tensor.get_dim(0) != dim0 || tensor.get_dim(1) != dim1) {
+    return base::error::InvalidArgument("The tensor has a wrong dim.");
+  }
+  return base::error::Success();
+}
+
+}  // namespace
+
 MatmulLayer::MatmulLayer(base::DeviceType device_type, int32_t dim0, int32_t dim1,
                          bool is_quant_layer, bool has_bias)
     : LayerParam(device_type, LayerType::kLayerMatmul, is_quant_layer, "Matmul"),
@@ -24,7 +46,7 @@ base::Status MatmulLayer::check() const {
   }
 
   if (!is_quant_layer_) {
-    status = check_tensor_with_dim(get_weight(0), device_type_, data_type_, dim0_, dim1_);
+    status = check_weight_tensor(get_weight(0), device_type_, dim0_, dim1_);
     if (!status) {
       LOG(ERROR) << "The weight tensor error in the matmul layer.";
       return status;

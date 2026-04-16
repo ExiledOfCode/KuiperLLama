@@ -1,6 +1,17 @@
 #ifndef KUIPER_INCLUDE_MODEL_LLAMA_CONFIG_H_
 #define KUIPER_INCLUDE_MODEL_LLAMA_CONFIG_H_
+#include "base/base.h"
 namespace model {
+constexpr uint32_t kModelFileMagic = 0x4B4D444C;  // "KMDL"
+constexpr uint32_t kModelFileVersion = 1;
+
+struct ModelFileHeader {
+  uint32_t magic = kModelFileMagic;
+  uint32_t version = kModelFileVersion;
+  int32_t weight_type = static_cast<int32_t>(base::WeightType::kWeightTypeFp32);
+  int32_t reserved = 0;
+};
+
 struct ModelConfig {
   int32_t dim = 0;
   int32_t hidden_dim = 0;

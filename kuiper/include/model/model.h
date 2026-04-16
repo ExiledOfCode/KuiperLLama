@@ -42,6 +42,8 @@ class Model {
 
   virtual const tensor::Tensor& get_buffer(ModelBufferType buffer_idx) const;
 
+  virtual bool has_buffer(ModelBufferType buffer_idx) const;
+
   virtual bool is_sentence_ending(int32_t token_idx) const;
 
   virtual std::string decode(int32_t token_idx) const;
@@ -88,6 +90,8 @@ class Model {
  protected:
   int32_t group_size_ = 1;
   bool is_quant_model_ = false;
+  base::WeightType weight_type_ = base::WeightType::kWeightTypeFp32;
+  base::DataType weight_data_type_ = base::DataType::kDataTypeFp32;
   std::unique_ptr<TransformerConfig> config_;
 
   std::string token_path_;

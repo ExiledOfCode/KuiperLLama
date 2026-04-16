@@ -272,7 +272,9 @@ void reset_generation_state(const model::Qwen3Model& model) {
   };
 
   for (const auto buffer_type : runtime_buffers) {
-    clear_tensor_buffer(model.get_buffer(buffer_type));
+    if (model.has_buffer(buffer_type)) {
+      clear_tensor_buffer(model.get_buffer(buffer_type));
+    }
   }
 }
 

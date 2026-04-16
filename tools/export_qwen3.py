@@ -4,6 +4,7 @@ Export Qwen3 HuggingFace safetensors weights to KuiperLLama .bin format.
 
 Usage examples:
   python3 tools/export_qwen3.py models/Qwen3-1.7B/Qwen3-1.7B.bin --hf=models/Qwen3-1.7B
+  python3 tools/export_qwen3.py --output models/Qwen3-1.7B/Qwen3-1.7B-bf16.bin --model-dir=models/Qwen3-1.7B --dtype=bf16
   python3 tools/export_qwen3.py --output models/Qwen3-1.7B/Qwen3-1.7B.bin --model-dir=models/Qwen3-1.7B
 
 Output weight order follows `kuiper/source/model/qwen3.cpp`:
@@ -38,11 +39,22 @@ import torch
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL_DIR = ROOT_DIR / "models" / "Qwen3-1.7B"
 DEFAULT_OUTPUT = DEFAULT_MODEL_DIR / "Qwen3-1.7B.bin"
+MODEL_FILE_MAGIC = 0x4B4D444C  # "KMDL"
+MODEL_FILE_VERSION = 1
+WEIGHT_TYPE_FP32 = 0
+WEIGHT_TYPE_INT8 = 1
+WEIGHT_TYPE_BF16 = 2
 
 
 def serialize_fp32(file_obj, tensor: torch.Tensor) -> None:
     """Write one tensor in fp32 contiguous layout."""
     data = tensor.detach().to(torch.float32).contiguous().view(-1).cpu().numpy()
+    file_obj.write(data.tobytes())
+
+
+def serialize_bf16(file_obj, tensor: torch.Tensor) -> None:
+    """Write one tensor in bf16 contiguous layout."""
+    data = tensor.detach().to(torch.bfloat16).contiguous().view(torch.uint16).cpu().numpy()
     file_obj.write(data.tobytes())
 
 
@@ -76,6 +88,14 @@ def build_header(config: Dict, max_seq_len: int) -> bytes:
         int(max_seq_len),
         intermediate_size,
     )
+
+
+def build_file_header(dtype_name: str) -> bytes:
+    if dtype_name == "bf16":
+        weight_type = WEIGHT_TYPE_BF16
+    else:
+        weight_type = WEIGHT_TYPE_FP32
+    return struct.pack("IIii", MODEL_FILE_MAGIC, MODEL_FILE_VERSION, weight_type, 0)
 
 
 def build_weight_order(config: Dict) -> List[str]:
@@ -195,6 +215,7 @@ def export_qwen3_bin(
     model_dir: Path,
     output_path: Path,
     max_seq_len: int,
+    dtype_name: str,
     overwrite: bool = False,
     check_only: bool = False,
 ) -> None:
@@ -230,15 +251,19 @@ def export_qwen3_bin(
     print(f"head_num      : {config['num_attention_heads']}")
     print(f"kv_head_num   : {config['num_key_value_heads']}")
     print(f"intermediate  : {config['intermediate_size']}")
+    print(f"weight_dtype  : {dtype_name}")
 
     if check_only:
         print("[check-only] required keys and config are valid.")
         return
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    file_header = build_file_header(dtype_name)
     header = build_header(config, max_seq_len)
+    serializer = serialize_bf16 if dtype_name == "bf16" else serialize_fp32
 
     with output_path.open("wb") as f:
+        f.write(file_header)
         f.write(header)
 
         total = len(order)
@@ -247,7 +272,7 @@ def export_qwen3_bin(
                 tensor = resolve_lm_head(reader, "model.embed_tokens.weight", "lm_head.weight")
             else:
                 tensor = reader.get_tensor(name)
-            serialize_fp32(f, tensor)
+            serializer(f, tensor)
             if idx % 20 == 0 or idx == total:
                 print(f"[{idx:>3}/{total}] {name}")
 
@@ -290,6 +315,13 @@ def parse_args() -> argparse.Namespace:
         help="Exported max_seq_len in bin header (default: 256).",
     )
     parser.add_argument(
+        "--dtype",
+        type=str,
+        default="fp32",
+        choices=("fp32", "bf16"),
+        help="Stored weight dtype in output file (default: fp32).",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite output file if it already exists.",
@@ -317,6 +349,7 @@ def main() -> int:
             model_dir=model_dir,
             output_path=output_path,
             max_seq_len=args.max_seq_len,
+            dtype_name=args.dtype,
             overwrite=args.overwrite,
             check_only=args.check_only,
         )
