@@ -40,6 +40,8 @@ const std::string& Model::token_path() const { return token_path_; }
 
 const std::string& Model::model_path() const { return model_path_; }
 
+int32_t Model::max_seq_len() const { return config_ ? config_->seq_len_ : 0; }
+
 void Model::set_load_progress_callback(LoadProgressCallback callback) {
   load_progress_callback_ = std::move(callback);
 }

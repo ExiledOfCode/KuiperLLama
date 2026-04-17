@@ -301,6 +301,22 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
   if (tokens.empty()) {
     return {"", 0};
   }
+  const int32_t max_seq_len = model.max_seq_len();
+  const int32_t requested_max_new_tokens = std::max(1, max_new_tokens);
+  if (max_seq_len > 0 && prompt_len >= max_seq_len) {
+    std::ostringstream error;
+    error << "当前请求超过模型上下文长度：prompt_tokens=" << prompt_len
+          << ", max_token=" << requested_max_new_tokens << ", seq_len=" << max_seq_len
+          << "。请减少历史轮数或降低 max_token。";
+    return {error.str(), 0};
+  }
+  if (max_seq_len > 0 && prompt_len + requested_max_new_tokens > max_seq_len) {
+    std::ostringstream error;
+    error << "当前请求超过模型上下文长度：prompt_tokens=" << prompt_len
+          << ", max_token=" << requested_max_new_tokens << ", seq_len=" << max_seq_len
+          << "。请减少历史轮数或降低 max_token。";
+    return {error.str(), 0};
+  }
 
   const auto step2_begin = std::chrono::steady_clock::now();
   const auto token_pieces_preview =
@@ -342,7 +358,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
   if (emit_trace) {
     model.reset_profile_stats();
   }
-  const int32_t total_steps = prompt_len + std::max(1, max_new_tokens);
+  const int32_t total_steps = prompt_len + requested_max_new_tokens;
   const auto step3_begin = std::chrono::steady_clock::now();
 
   int32_t pos = 0;

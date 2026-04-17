@@ -42,6 +42,8 @@ class Model {
 
   const std::string& model_path() const;
 
+  int32_t max_seq_len() const;
+
   virtual tensor::Tensor& get_buffer(ModelBufferType buffer_idx);
 
   virtual const tensor::Tensor& get_buffer(ModelBufferType buffer_idx) const;
