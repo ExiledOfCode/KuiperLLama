@@ -175,6 +175,16 @@ void emit_trace_json(const json& payload, bool enabled) {
   std::cout.flush();
 }
 
+void emit_load_progress_json(size_t loaded_bytes, size_t total_bytes, const std::string& stage) {
+  std::cout << "[LOAD_PROGRESS]"
+            << json{{"loaded_bytes", loaded_bytes},
+                    {"total_bytes", total_bytes},
+                    {"stage", stage}}
+                   .dump()
+            << std::endl;
+  std::cout.flush();
+}
+
 std::vector<std::string> build_token_pieces_preview(const model::Qwen3Model& model,
                                                     const std::vector<int32_t>& token_ids,
                                                     size_t limit) {
@@ -494,6 +504,11 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
 }
 
 bool init_model(model::Qwen3Model& model) {
+  model.set_load_progress_callback(
+      [](size_t loaded_bytes, size_t total_bytes, const std::string& stage) {
+        emit_load_progress_json(loaded_bytes, total_bytes, stage);
+      });
+
   base::DeviceType device_type = base::DeviceType::kDeviceCUDA;
   const char* force_device = std::getenv("KLLM_DEVICE");
   if (force_device != nullptr && std::string(force_device) == "cpu") {

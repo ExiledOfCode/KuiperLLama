@@ -2,6 +2,7 @@
 #define KUIPER_INCLUDE_MODEL_MODEL_H_
 #include <cstdint>
 #include <op/embedding.h>
+#include <functional>
 #include <map>
 #include <string>
 #include "config.h"
@@ -18,6 +19,9 @@ struct OpProfileStat {
   int64_t calls = 0;
   double avg_ms = 0.0;
 };
+
+using LoadProgressCallback = std::function<void(size_t loaded_bytes, size_t total_bytes,
+                                                const std::string& stage)>;
 
 class Model {
  public:
@@ -63,6 +67,8 @@ class Model {
                                     const op::EmbeddingOutput& embedding_output,
                                     bool is_prompt) const;
 
+  void set_load_progress_callback(LoadProgressCallback callback);
+
  protected:
   virtual base::Status insert_buffer(ModelBufferType buffer_idx, const tensor::Tensor& tensor);
 
@@ -73,6 +79,9 @@ class Model {
   virtual base::Status gen_model_from_file();
 
   virtual base::Status generate_model_infos(const ModelConfig& config) const;
+
+  void notify_load_progress(size_t loaded_bytes, size_t total_bytes,
+                            const std::string& stage) const;
 
   virtual int32_t post_processing(const tensor::Tensor& pos, bool is_prompt) const = 0;
 
@@ -103,6 +112,7 @@ class Model {
   base::DeviceType device_type_ = base::DeviceType::kDeviceUnknown;
   base::ModelType model_type_ = base::ModelType::kModelTypeUnknown;
   base::TokenizerType tokenizer_type_ = base::TokenizerType::kEncodeUnknown;
+  LoadProgressCallback load_progress_callback_;
 };
 }  // namespace model
 #endif  // KUIPER_INCLUDE_MODEL_MODEL_H_

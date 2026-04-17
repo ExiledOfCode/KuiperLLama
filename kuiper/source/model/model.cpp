@@ -40,6 +40,17 @@ const std::string& Model::token_path() const { return token_path_; }
 
 const std::string& Model::model_path() const { return model_path_; }
 
+void Model::set_load_progress_callback(LoadProgressCallback callback) {
+  load_progress_callback_ = std::move(callback);
+}
+
+void Model::notify_load_progress(size_t loaded_bytes, size_t total_bytes,
+                                 const std::string& stage) const {
+  if (load_progress_callback_) {
+    load_progress_callback_(loaded_bytes, total_bytes, stage);
+  }
+}
+
 base::Status Model::insert_buffer(ModelBufferType buffer_idx, const tensor::Tensor& tensor) {
   if (buffers_.count(buffer_idx) > 0) {
     return base::error::KeyHasExits(std::to_string(int(buffer_idx)) + " has exits in the buffers");

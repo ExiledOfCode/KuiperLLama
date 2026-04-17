@@ -251,6 +251,19 @@ void LayerParam::reset_weight_size(size_t size) { weights_.resize(size); }
 
 size_t LayerParam::weight_size() const { return weights_.size(); }
 
+size_t LayerParam::weight_byte_size() const {
+  size_t total = 0;
+  for (const auto& weight : weights_) {
+    if (!weight.is_empty()) {
+      total += weight.byte_size();
+    }
+  }
+  if (!scales_.is_empty()) {
+    total += scales_.byte_size();
+  }
+  return total;
+}
+
 base::Status Layer::forward(const tensor::Tensor& input1, const tensor::Tensor& output1) {
   this->set_input(0, input1);
   this->set_output(0, output1);

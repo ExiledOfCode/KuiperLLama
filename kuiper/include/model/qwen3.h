@@ -42,7 +42,7 @@ struct Qwen3Layers {
 
   std::shared_ptr<op::Layer> embedding_layer_;
 
-  void to_cuda(std::shared_ptr<kernel::CudaConfig> config);
+  void to_cuda(std::shared_ptr<kernel::CudaConfig> config, LoadProgressCallback progress_callback);
 };
 
 class Qwen3Model : public Model {

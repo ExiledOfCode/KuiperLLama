@@ -70,7 +70,61 @@ std::vector<model::OpProfileStat> snapshot_profile_stats() {
 
 namespace model {
 
-void Qwen2Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config) {
+void Qwen2Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config,
+                          LoadProgressCallback progress_callback) {
+  auto layer_weight_bytes = [](const std::shared_ptr<op::Layer>& layer) -> size_t {
+    auto param_layer = std::dynamic_pointer_cast<op::LayerParam>(layer);
+    return param_layer ? param_layer->weight_byte_size() : 0;
+  };
+
+  std::vector<std::shared_ptr<op::Layer>> param_layers;
+  auto collect_layer = [&param_layers](const std::shared_ptr<op::Layer>& layer) {
+    if (layer) {
+      param_layers.push_back(layer);
+    }
+  };
+  auto collect_layers = [&collect_layer](const std::vector<std::shared_ptr<op::Layer>>& layers) {
+    for (const auto& layer : layers) {
+      collect_layer(layer);
+    }
+  };
+
+  collect_layer(cls_layer_);
+  collect_layer(embedding_layer_);
+  collect_layers(wq_layers_);
+  collect_layers(wk_layers_);
+  collect_layers(wv_layers_);
+  collect_layers(wo_layers_);
+  collect_layers(w1_layers_);
+  collect_layers(w2_layers_);
+  collect_layers(w3_layers_);
+  collect_layers(rmsnorm_layers_);
+
+  size_t total_bytes = 0;
+  for (const auto& layer : param_layers) {
+    total_bytes += layer_weight_bytes(layer);
+  }
+  size_t loaded_bytes = 0;
+
+  auto copy_layer = [&](const std::shared_ptr<op::Layer>& layer, const std::string& stage) {
+    if (!layer) {
+      return;
+    }
+    const size_t bytes = layer_weight_bytes(layer);
+    layer->set_cuda_config(config);
+    layer->to_cuda();
+    if (bytes > 0) {
+      loaded_bytes += bytes;
+      if (progress_callback) {
+        progress_callback(std::min(loaded_bytes, total_bytes), total_bytes, stage);
+      }
+    }
+  };
+
+  if (progress_callback) {
+    progress_callback(0, total_bytes, "start");
+  }
+
   if (add_layer_) {
     add_layer_->set_cuda_config(config);
     add_layer_->to_cuda();
@@ -87,13 +141,11 @@ void Qwen2Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config) {
   }
 
   if (cls_layer_) {
-    cls_layer_->set_cuda_config(config);
-    cls_layer_->to_cuda();
+    copy_layer(cls_layer_, "lm_head");
   }
 
   if (embedding_layer_) {
-    embedding_layer_->set_cuda_config(config);
-    embedding_layer_->to_cuda();
+    copy_layer(embedding_layer_, "embedding");
   }
 
   if (mha_layer_) {
@@ -102,59 +154,39 @@ void Qwen2Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config) {
   }
 
   for (auto& weight_layer : wq_layers_) {
-    if (weight_layer) {
-      weight_layer->set_cuda_config(config);
-      weight_layer->to_cuda();
-    }
+    copy_layer(weight_layer, "attention.wq");
   }
 
   for (auto& weight_layer : wk_layers_) {
-    if (weight_layer) {
-      weight_layer->set_cuda_config(config);
-      weight_layer->to_cuda();
-    }
+    copy_layer(weight_layer, "attention.wk");
   }
 
   for (auto& weight_layer : wv_layers_) {
-    if (weight_layer) {
-      weight_layer->set_cuda_config(config);
-      weight_layer->to_cuda();
-    }
+    copy_layer(weight_layer, "attention.wv");
   }
 
   for (auto& weight_layer : wo_layers_) {
-    if (weight_layer) {
-      weight_layer->set_cuda_config(config);
-      weight_layer->to_cuda();
-    }
+    copy_layer(weight_layer, "attention.wo");
   }
 
   for (auto& weight_layer : w1_layers_) {
-    if (weight_layer) {
-      weight_layer->set_cuda_config(config);
-      weight_layer->to_cuda();
-    }
+    copy_layer(weight_layer, "ffn.w1");
   }
 
   for (auto& weight_layer : w2_layers_) {
-    if (weight_layer) {
-      weight_layer->set_cuda_config(config);
-      weight_layer->to_cuda();
-    }
+    copy_layer(weight_layer, "ffn.w2");
   }
 
   for (auto& weight_layer : w3_layers_) {
-    if (weight_layer) {
-      weight_layer->set_cuda_config(config);
-      weight_layer->to_cuda();
-    }
+    copy_layer(weight_layer, "ffn.w3");
   }
 
   for (auto& rms_norm_layer : rmsnorm_layers_) {
-    if (rms_norm_layer) {
-      rms_norm_layer->to_cuda();
-      rms_norm_layer->set_cuda_config(config);
-    }
+    copy_layer(rms_norm_layer, "rmsnorm");
+  }
+
+  if (progress_callback) {
+    progress_callback(total_bytes, total_bytes, "done");
   }
 }
 
@@ -495,7 +527,10 @@ void Qwen2Model::init_mem() {
 
   if (device_type_ == base::DeviceType::kDeviceCUDA) {
     CHECK_NE(cuda_config_, nullptr);
-    qwen_layers_->to_cuda(cuda_config_);
+    qwen_layers_->to_cuda(
+        cuda_config_, [this](size_t loaded_bytes, size_t total_bytes, const std::string& stage) {
+          notify_load_progress(loaded_bytes, total_bytes, stage);
+        });
   }
 
   std::shared_ptr<base::DeviceAllocator> alloc_cpu =

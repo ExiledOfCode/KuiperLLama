@@ -162,6 +162,8 @@ class LayerParam : public Layer {
 
   size_t weight_size() const;
 
+  size_t weight_byte_size() const;
+
   void reset_weight_size(size_t size);
 
   tensor::Tensor& get_weight(int32_t idx);
