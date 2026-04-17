@@ -1,0 +1,36 @@
+#include "sampler/temperature_sampler.h"
+
+#include <chrono>
+#include <cmath>
+#include "../op/kernels/cuda/temperature_sampler_kernel.cuh"
+
+namespace sampler {
+
+TemperatureSampler::TemperatureSampler(base::DeviceType device_type, float temperature)
+    : Sampler(device_type), argmax_sampler_(device_type) {
+  set_temperature(temperature);
+  seed_ = static_cast<uint64_t>(
+      std::chrono::high_resolution_clock::now().time_since_epoch().count());
+}
+
+void TemperatureSampler::set_temperature(float temperature) {
+  if (!std::isfinite(temperature) || temperature < 0.0f) {
+    temperature_ = 0.0f;
+    return;
+  }
+  temperature_ = temperature;
+}
+
+float TemperatureSampler::temperature() const { return temperature_; }
+
+size_t TemperatureSampler::sample(const float* logits, size_t size, void* stream) {
+  if (temperature_ <= 0.0f || device_type_ != base::DeviceType::kDeviceCUDA) {
+    return argmax_sampler_.sample(logits, size, stream);
+  }
+
+  sample_count_ += 1;
+  const uint64_t seed = seed_ ^ (sample_count_ * 0x9E3779B97F4A7C15ULL);
+  return kernel::temperature_sample_kernel_cu(logits, size, temperature_, seed, stream);
+}
+
+}  // namespace sampler

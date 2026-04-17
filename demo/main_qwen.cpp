@@ -540,6 +540,17 @@ int parse_max_steps(const char* raw, int default_steps = 128) {
   return value;
 }
 
+float parse_temperature(const char* raw, float default_temperature = 0.0f) {
+  if (raw == nullptr) {
+    return default_temperature;
+  }
+  float value = std::atof(raw);
+  if (value < 0.0f) {
+    return default_temperature;
+  }
+  return value;
+}
+
 void print_result(const GenerationResult& result, double duration_sec, bool print_stats) {
   const double steps_per_s = duration_sec > 0 ? static_cast<double>(result.steps) / duration_sec : 0.0;
   std::printf("[RESPONSE_START]\n%s\n[RESPONSE_END]\n", result.response.c_str());
@@ -552,8 +563,9 @@ void print_result(const GenerationResult& result, double duration_sec, bool prin
 }
 
 int run_single_shot(const char* checkpoint_path, const char* tokenizer_path, const std::string& prompt,
-                    int max_steps) {
+                    int max_steps, float temperature) {
   model::Qwen2Model model(base::TokenizerType::kEncodeBpe, tokenizer_path, checkpoint_path, false);
+  model.set_sampling_temperature(temperature);
   if (!init_model(model)) {
     return -1;
   }
@@ -567,8 +579,10 @@ int run_single_shot(const char* checkpoint_path, const char* tokenizer_path, con
   return 0;
 }
 
-int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_steps) {
+int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_steps,
+              float temperature) {
   model::Qwen2Model model(base::TokenizerType::kEncodeBpe, tokenizer_path, checkpoint_path, false);
+  model.set_sampling_temperature(temperature);
   if (!init_model(model)) {
     return -1;
   }
@@ -670,8 +684,9 @@ int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_s
 void print_usage(const char* program) {
   std::cerr << "Usage:\n"
             << "  " << program
-            << " <checkpoint_path> <tokenizer_path> <prompt> [max_new_tokens]\n"
-            << "  " << program << " --serve <checkpoint_path> <tokenizer_path> [max_new_tokens]\n";
+            << " <checkpoint_path> <tokenizer_path> <prompt> [max_new_tokens] [temperature]\n"
+            << "  " << program
+            << " --serve <checkpoint_path> <tokenizer_path> [max_new_tokens] [temperature]\n";
 }
 
 }  // namespace
@@ -682,23 +697,25 @@ int main(int argc, char* argv[]) {
   google::InitGoogleLogging(argv[0]);
 
   if (argc >= 2 && std::string(argv[1]) == "--serve") {
-    if (argc < 4 || argc > 5) {
+    if (argc < 4 || argc > 6) {
       print_usage(argv[0]);
       return -1;
     }
     const char* checkpoint_path = argv[2];
     const char* tokenizer_path = argv[3];
-    const int max_steps = argc == 5 ? parse_max_steps(argv[4]) : 128;
-    return run_serve(checkpoint_path, tokenizer_path, max_steps);
+    const int max_steps = argc >= 5 ? parse_max_steps(argv[4]) : 128;
+    const float temperature = argc == 6 ? parse_temperature(argv[5]) : 0.0f;
+    return run_serve(checkpoint_path, tokenizer_path, max_steps, temperature);
   }
 
-  if (argc < 4 || argc > 5) {
+  if (argc < 4 || argc > 6) {
     print_usage(argv[0]);
     return -1;
   }
   const char* checkpoint_path = argv[1];
   const char* tokenizer_path = argv[2];
   const std::string prompt = argv[3];
-  const int max_steps = argc == 5 ? parse_max_steps(argv[4]) : 128;
-  return run_single_shot(checkpoint_path, tokenizer_path, prompt, max_steps);
+  const int max_steps = argc >= 5 ? parse_max_steps(argv[4]) : 128;
+  const float temperature = argc == 6 ? parse_temperature(argv[5]) : 0.0f;
+  return run_single_shot(checkpoint_path, tokenizer_path, prompt, max_steps, temperature);
 }

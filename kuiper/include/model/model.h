@@ -9,7 +9,7 @@
 #include "op/encode.h"
 #include "op/layer.h"
 #include "raw_model_data.h"
-#include "sampler/argmax_sampler.h"
+#include "sampler/temperature_sampler.h"
 #include "tensor/tensor.h"
 
 namespace model {
@@ -69,6 +69,10 @@ class Model {
 
   void set_load_progress_callback(LoadProgressCallback callback);
 
+  void set_sampling_temperature(float temperature);
+
+  float sampling_temperature() const;
+
  protected:
   virtual base::Status insert_buffer(ModelBufferType buffer_idx, const tensor::Tensor& tensor);
 
@@ -113,6 +117,7 @@ class Model {
   base::ModelType model_type_ = base::ModelType::kModelTypeUnknown;
   base::TokenizerType tokenizer_type_ = base::TokenizerType::kEncodeUnknown;
   LoadProgressCallback load_progress_callback_;
+  float sampling_temperature_ = 0.0f;
 };
 }  // namespace model
 #endif  // KUIPER_INCLUDE_MODEL_MODEL_H_

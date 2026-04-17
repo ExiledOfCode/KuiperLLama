@@ -233,7 +233,7 @@ base::Status Qwen3Model::init(base::DeviceType device_type) {
                                   get_buffer(ModelBufferType::kCosCache), cuda_config_->stream);
   }
 
-  sampler_ = std::make_unique<sampler::ArgmaxSampler>(device_type_);
+  sampler_ = std::make_unique<sampler::TemperatureSampler>(device_type_, sampling_temperature_);
   return error::Success();
 }
 

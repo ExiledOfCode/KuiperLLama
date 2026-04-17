@@ -44,6 +44,16 @@ void Model::set_load_progress_callback(LoadProgressCallback callback) {
   load_progress_callback_ = std::move(callback);
 }
 
+void Model::set_sampling_temperature(float temperature) {
+  if (temperature < 0.0f) {
+    sampling_temperature_ = 0.0f;
+    return;
+  }
+  sampling_temperature_ = temperature;
+}
+
+float Model::sampling_temperature() const { return sampling_temperature_; }
+
 void Model::notify_load_progress(size_t loaded_bytes, size_t total_bytes,
                                  const std::string& stage) const {
   if (load_progress_callback_) {
