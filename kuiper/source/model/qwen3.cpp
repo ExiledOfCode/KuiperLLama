@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cuda_runtime_api.h>
+#include <initializer_list>
 #include <glog/logging.h>
 #include <op/matmul.h>
 #include <op/mha.h>
@@ -13,6 +14,8 @@
 #include "../op/kernels/cpu/rope_kernel.h"
 #include "../op/kernels/cuda/rope_kernel.cuh"
 #include "base/tick.h"
+#include "model/paged_kv_cache.h"
+#include "model/weight_loader.h"
 
 namespace {
 
@@ -27,6 +30,54 @@ thread_local bool g_qwen3_profile_enabled = true;
 double elapsed_ms(const std::chrono::steady_clock::time_point& begin,
                   const std::chrono::steady_clock::time_point& end) {
   return std::chrono::duration<double, std::milli>(end - begin).count();
+}
+
+size_t dims_byte_size(base::DataType data_type, std::initializer_list<size_t> dims) {
+  size_t total = base::DataTypeSize(data_type);
+  for (const size_t dim : dims) {
+    total *= dim;
+  }
+  return total;
+}
+
+size_t qwen3_rope_fill_progress_bytes(const model::TransformerConfig& config) {
+  return 2 * dims_byte_size(base::DataType::kDataTypeFp32,
+                            {static_cast<size_t>(config.head_size_),
+                             static_cast<size_t>(config.seq_len_)});
+}
+
+size_t qwen3_runtime_progress_bytes(const model::TransformerConfig& config,
+                                    int32_t kv_cache_tokens) {
+  size_t total = 0;
+  total += dims_byte_size(base::DataType::kDataTypeInt32, {1});
+  total += dims_byte_size(base::DataType::kDataTypeFp32,
+                          {1, static_cast<size_t>(config.hidden_dim_)});
+  total += dims_byte_size(base::DataType::kDataTypeFp32,
+                          {static_cast<size_t>(config.head_size_),
+                           static_cast<size_t>(config.seq_len_)}) *
+           2;
+  total += dims_byte_size(base::DataType::kDataTypeFp32,
+                          {static_cast<size_t>(config.hidden_dim_)});
+  total += dims_byte_size(base::DataType::kDataTypeFp32, {static_cast<size_t>(config.dim_)});
+  total += dims_byte_size(base::DataType::kDataTypeFp32,
+                          {static_cast<size_t>(config.immediate_dim_)}) *
+           2;
+  total += dims_byte_size(base::DataType::kDataTypeFp32,
+                          {static_cast<size_t>(config.layer_num_),
+                           static_cast<size_t>(kv_cache_tokens),
+                           static_cast<size_t>(config.kv_dim_)}) *
+           2;
+  total += dims_byte_size(base::DataType::kDataTypeFp32, {static_cast<size_t>(config.dim_)});
+  total += dims_byte_size(base::DataType::kDataTypeInt32, {1});
+  total += dims_byte_size(base::DataType::kDataTypeFp32,
+                          {static_cast<size_t>(config.head_num_),
+                           static_cast<size_t>(config.seq_len_)});
+  total += dims_byte_size(base::DataType::kDataTypeFp32,
+                          {static_cast<size_t>(config.hidden_dim_)});
+  total += dims_byte_size(base::DataType::kDataTypeFp32,
+                          {static_cast<size_t>(config.vocab_size_)});
+  total += qwen3_rope_fill_progress_bytes(config);
+  return total;
 }
 
 void record_profile(const char* op_name, double cost_ms) {
@@ -72,8 +123,11 @@ std::vector<model::OpProfileStat> snapshot_profile_stats() {
 
 namespace model {
 
-void Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config,
-                          LoadProgressCallback progress_callback) {
+std::shared_ptr<base::Buffer> Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config,
+                                                   LoadProgressCallback progress_callback,
+                                                   bool optimized_weight_loading,
+                                                   const void* contiguous_weight_data,
+                                                   size_t contiguous_weight_bytes) {
   auto layer_weight_bytes = [](const std::shared_ptr<op::Layer>& layer) -> size_t {
     auto param_layer = std::dynamic_pointer_cast<op::LayerParam>(layer);
     return param_layer ? param_layer->weight_byte_size() : 0;
@@ -102,6 +156,12 @@ void Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config,
   collect_layers(w3_layers_);
   collect_layers(rmsnorm_layers_);
 
+  for (const auto& layer : param_layers) {
+    if (layer) {
+      layer->set_cuda_config(config);
+    }
+  }
+
   size_t total_bytes = 0;
   for (const auto& layer : param_layers) {
     total_bytes += layer_weight_bytes(layer);
@@ -113,7 +173,6 @@ void Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config,
       return;
     }
     const size_t bytes = layer_weight_bytes(layer);
-    layer->set_cuda_config(config);
     layer->to_cuda();
     if (bytes > 0) {
       loaded_bytes += bytes;
@@ -142,17 +201,32 @@ void Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config,
     swiglu_layer_->to_cuda();
   }
 
+  if (mha_layer_) {
+    mha_layer_->set_cuda_config(config);
+    mha_layer_->to_cuda();
+  }
+
+  if (optimized_weight_loading) {
+    if (progress_callback) {
+      progress_callback(0, contiguous_weight_bytes, "weights.bulk_prepare");
+    }
+    auto device_buffer = bulk_load_param_layers_to_cuda(param_layers, config, progress_callback,
+                                                        contiguous_weight_data, contiguous_weight_bytes);
+    if (device_buffer) {
+      return device_buffer;
+    }
+    if (progress_callback) {
+      progress_callback(0, total_bytes, "weights.bulk_fallback");
+    }
+    LOG(WARNING) << "Falling back to legacy per-layer CUDA weight upload for Qwen3.";
+  }
+
   if (cls_layer_) {
     copy_layer(cls_layer_, "lm_head");
   }
 
   if (embedding_layer_) {
     copy_layer(embedding_layer_, "embedding");
-  }
-
-  if (mha_layer_) {
-    mha_layer_->set_cuda_config(config);
-    mha_layer_->to_cuda();
   }
 
   for (auto& weight_layer : wq_layers_) {
@@ -190,6 +264,7 @@ void Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaConfig> config,
   if (progress_callback) {
     progress_callback(total_bytes, total_bytes, "done");
   }
+  return nullptr;
 }
 
 Qwen3Model::Qwen3Model(base::TokenizerType tokenizer_type, std::string token_path,
@@ -228,9 +303,18 @@ base::Status Qwen3Model::init(base::DeviceType device_type) {
                                    get_buffer(ModelBufferType::kCosCache).ptr<float>());
   } else {
     CHECK_NE(cuda_config_, nullptr);
+    const size_t weight_total_bytes = contiguous_weight_data_byte_size();
+    const int32_t kv_cache_tokens =
+        use_paged_kv_cache() ? paged_kv_cache_startup_tokens() : config_->seq_len_;
+    const size_t runtime_total_bytes = qwen3_runtime_progress_bytes(*config_, kv_cache_tokens);
+    const size_t rope_fill_bytes = qwen3_rope_fill_progress_bytes(*config_);
+    const size_t overall_total_bytes = weight_total_bytes + runtime_total_bytes;
+    notify_load_progress(overall_total_bytes - rope_fill_bytes, overall_total_bytes,
+                         "buffers.rope_cache_fill");
     kernel::sin_cos_cache_calc_cu(config_->head_size_, config_->seq_len_,
                                   get_buffer(ModelBufferType::kSinCache),
                                   get_buffer(ModelBufferType::kCosCache), cuda_config_->stream);
+    notify_load_progress(overall_total_bytes, overall_total_bytes, "done");
   }
 
   sampler_ = std::make_unique<sampler::TemperatureSampler>(device_type_, sampling_temperature_);
@@ -403,12 +487,34 @@ void Qwen3Model::init_mem() {
     alloc = base::CUDADeviceAllocatorFactory::get_instance();
   }
 
+  size_t weight_total_bytes = 0;
+  size_t runtime_total_bytes = 0;
+  size_t runtime_loaded_bytes = 0;
+  const bool paged_kv_cache = use_paged_kv_cache();
+  const int32_t kv_cache_tokens =
+      paged_kv_cache ? paged_kv_cache_startup_tokens() : config_->seq_len_;
+  auto emit_runtime_progress = [&](size_t delta_bytes, const std::string& stage) {
+    if (runtime_total_bytes == 0) {
+      return;
+    }
+    runtime_loaded_bytes = std::min(runtime_loaded_bytes + delta_bytes, runtime_total_bytes);
+    notify_load_progress(weight_total_bytes + runtime_loaded_bytes,
+                         weight_total_bytes + runtime_total_bytes, stage);
+  };
+
   if (device_type_ == base::DeviceType::kDeviceCUDA) {
     CHECK_NE(cuda_config_, nullptr);
-    qwen_layers_->to_cuda(
-        cuda_config_, [this](size_t loaded_bytes, size_t total_bytes, const std::string& stage) {
-          notify_load_progress(loaded_bytes, total_bytes, stage);
-        });
+    weight_total_bytes = contiguous_weight_data_byte_size();
+    runtime_total_bytes = qwen3_runtime_progress_bytes(*config_, kv_cache_tokens);
+    device_weight_buffer_ = qwen_layers_->to_cuda(
+        cuda_config_,
+        [this, runtime_total_bytes](size_t loaded_bytes, size_t total_bytes, const std::string& stage) {
+          const size_t weight_total_bytes = total_bytes;
+          const size_t overall_total_bytes = weight_total_bytes + runtime_total_bytes;
+          const std::string mapped_stage = stage == "done" ? "weights.done" : stage;
+          notify_load_progress(std::min(loaded_bytes, weight_total_bytes), overall_total_bytes,
+                               mapped_stage);
+        }, optimized_weight_loading(), contiguous_weight_data(), contiguous_weight_data_byte_size());
   }
 
   std::shared_ptr<base::DeviceAllocator> alloc_cpu =
@@ -426,9 +532,20 @@ void Qwen3Model::init_mem() {
 
   CHECK(insert_buffer(ModelBufferType::kSinCache, sin_cache));
   CHECK(insert_buffer(ModelBufferType::kCosCache, cos_cache));
+  emit_runtime_progress(
+      dims_byte_size(base::DataType::kDataTypeFp32,
+                     {static_cast<size_t>(config_->head_size_),
+                      static_cast<size_t>(config_->seq_len_)}) *
+          2,
+      "buffers.rope_cache_alloc");
 
   CHECK(insert_buffer(ModelBufferType::kInputTokens, input_tokens));
   CHECK(insert_buffer(ModelBufferType::kInputEmbeddings, input_embeddings));
+  emit_runtime_progress(
+      dims_byte_size(base::DataType::kDataTypeInt32, {1}) +
+          dims_byte_size(base::DataType::kDataTypeFp32,
+                         {1, static_cast<size_t>(config_->hidden_dim_)}),
+      "buffers.io");
 
   tensor::Tensor rms_output(base::DataType::kDataTypeFp32, config_->hidden_dim_, true, alloc);
   tensor::Tensor out_mha(base::DataType::kDataTypeFp32, config_->dim_, true, alloc);
@@ -443,15 +560,36 @@ void Qwen3Model::init_mem() {
 
   CHECK(insert_buffer(ModelBufferType::kW1Output, w1_output));
   CHECK(insert_buffer(ModelBufferType::kW3Output, w3_output));
+  emit_runtime_progress(
+      dims_byte_size(base::DataType::kDataTypeFp32,
+                     {static_cast<size_t>(config_->hidden_dim_)}) +
+          dims_byte_size(base::DataType::kDataTypeFp32,
+                         {static_cast<size_t>(config_->dim_)}) +
+          dims_byte_size(base::DataType::kDataTypeFp32,
+                         {static_cast<size_t>(config_->immediate_dim_)}) *
+              2,
+      "buffers.activations");
 
   // kv cache
-  tensor::Tensor key_cache(base::DataType::kDataTypeFp32, config_->layer_num_, config_->seq_len_,
-                           config_->kv_dim_, true, alloc);
-  tensor::Tensor value_cache(base::DataType::kDataTypeFp32, config_->layer_num_, config_->seq_len_,
-                             config_->kv_dim_, true, alloc);
+  const size_t kv_stage_bytes = dims_byte_size(base::DataType::kDataTypeFp32,
+                                               {static_cast<size_t>(config_->layer_num_),
+                                                static_cast<size_t>(kv_cache_tokens),
+                                                static_cast<size_t>(config_->kv_dim_)});
+  if (paged_kv_cache) {
+    CHECK(init_paged_kv_cache());
+    emit_runtime_progress(kv_stage_bytes, "buffers.key_cache");
+    emit_runtime_progress(kv_stage_bytes, "buffers.value_cache");
+  } else {
+    tensor::Tensor key_cache(base::DataType::kDataTypeFp32, config_->layer_num_,
+                             config_->seq_len_, config_->kv_dim_, true, alloc);
+    tensor::Tensor value_cache(base::DataType::kDataTypeFp32, config_->layer_num_,
+                               config_->seq_len_, config_->kv_dim_, true, alloc);
 
-  CHECK(insert_buffer(ModelBufferType::kKeyCache, key_cache));
-  CHECK(insert_buffer(ModelBufferType::kValueCache, value_cache));
+    CHECK(insert_buffer(ModelBufferType::kKeyCache, key_cache));
+    emit_runtime_progress(kv_stage_bytes, "buffers.key_cache");
+    CHECK(insert_buffer(ModelBufferType::kValueCache, value_cache));
+    emit_runtime_progress(kv_stage_bytes, "buffers.value_cache");
+  }
 
   // Wq query output
   tensor::Tensor query(base::DataType::kDataTypeFp32, config_->dim_, true, alloc);
@@ -467,6 +605,15 @@ void Qwen3Model::init_mem() {
   CHECK(insert_buffer(ModelBufferType::kScoreStorage, attn));
   tensor::Tensor attn_output(base::DataType::kDataTypeFp32, config_->hidden_dim_, true, alloc);
   CHECK(insert_buffer(ModelBufferType::kAttnOutput, attn_output));
+  emit_runtime_progress(
+      dims_byte_size(base::DataType::kDataTypeFp32, {static_cast<size_t>(config_->dim_)}) +
+          dims_byte_size(base::DataType::kDataTypeInt32, {1}) +
+          dims_byte_size(base::DataType::kDataTypeFp32,
+                         {static_cast<size_t>(config_->head_num_),
+                          static_cast<size_t>(config_->seq_len_)}) +
+          dims_byte_size(base::DataType::kDataTypeFp32,
+                         {static_cast<size_t>(config_->hidden_dim_)}),
+      "buffers.attention");
 
   // final forward output
   tensor::Tensor forward_output(base::DataType::kDataTypeFp32, config_->vocab_size_, true, alloc);
@@ -477,6 +624,10 @@ void Qwen3Model::init_mem() {
   }
 
   CHECK(insert_buffer(ModelBufferType::kForwardOutput, forward_output));
+  emit_runtime_progress(
+      dims_byte_size(base::DataType::kDataTypeFp32,
+                     {static_cast<size_t>(config_->vocab_size_)}),
+      "buffers.logits");
 }
 
 base::Status Qwen3Model::create_layers() {
@@ -617,6 +768,9 @@ void Qwen3Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_tens
 
 base::Status Qwen3Model::predict(const tensor::Tensor& input, const tensor::Tensor& pos_tensor,
                                  bool is_prompt, int& next) const {
+  if (use_paged_kv_cache()) {
+    CHECK(ensure_paged_kv_cache(pos_tensor.index<int32_t>(0)));
+  }
   auto status = forward(input, pos_tensor, next);
   if (!status) {
     return status;
@@ -628,10 +782,8 @@ base::Status Qwen3Model::predict(const tensor::Tensor& input, const tensor::Tens
 void Qwen3Model::attention_mha(int32_t layer_idx, const tensor::Tensor& pos_tensor) const {
   CHECK(qwen_layers_ != nullptr);
   // mha
-  tensor::Tensor key_cache = get_buffer(ModelBufferType::kKeyCache);
-  // VAL = [val1,val2,...val t]
-  // output @ VAL = 最终的结果
-  tensor::Tensor val_cache = get_buffer(ModelBufferType::kValueCache);
+  tensor::Tensor key_cache;
+  tensor::Tensor val_cache;
 
   tensor::Tensor mha_output = get_buffer(ModelBufferType::kOutputMHA);
   tensor::Tensor score_storage = get_buffer(ModelBufferType::kScoreStorage);
@@ -639,9 +791,21 @@ void Qwen3Model::attention_mha(int32_t layer_idx, const tensor::Tensor& pos_tens
 
   const auto& mha_layer = qwen_layers_->mha_layer_;
   CHECK_NE(mha_layer, nullptr) << "The multi head attention layer is null pointer.";
+  auto mha = std::dynamic_pointer_cast<op::MultiHeadAttention>(mha_layer);
+  CHECK_NE(mha, nullptr);
+  if (use_paged_kv_cache()) {
+    CHECK_NE(paged_kv_cache(), nullptr);
+    mha->set_paged_kv_cache(paged_kv_cache()->key_page_table_ptr(),
+                            paged_kv_cache()->value_page_table_ptr(),
+                            paged_kv_cache()->page_size(), true);
+  } else {
+    key_cache = get_buffer(ModelBufferType::kKeyCache);
+    val_cache = get_buffer(ModelBufferType::kValueCache);
+    mha->set_paged_kv_cache(nullptr, nullptr, 0, false);
+  }
   int pos = pos_tensor.index<int32_t>(0);
-  std::dynamic_pointer_cast<op::MultiHeadAttention>(mha_layer)->set_pos(pos);
-  std::dynamic_pointer_cast<op::MultiHeadAttention>(mha_layer)->set_layer_idx(layer_idx);
+  mha->set_pos(pos);
+  mha->set_layer_idx(layer_idx);
   STATUS_CHECK(run_profiled(
       "attn.mha", [&]() { return mha_layer->forward(query, score_storage, key_cache, val_cache, mha_output); }));
 

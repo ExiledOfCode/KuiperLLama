@@ -170,6 +170,12 @@ class LayerParam : public Layer {
 
   const tensor::Tensor& get_weight(int32_t idx) const;
 
+  bool has_scales() const;
+
+  tensor::Tensor& get_scales();
+
+  const tensor::Tensor& get_scales() const;
+
   void to_cuda() override;
 
   base::Status set_weight(int32_t idx, const tensor::Tensor& weight) override;

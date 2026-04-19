@@ -151,6 +151,10 @@ const tensor::Tensor& MatmulLayer::get_bias(int32_t idx) const {
   return bias_.at(idx);
 }
 
+bool MatmulLayer::has_bias() const { return has_bias_ && !bias_.empty(); }
+
+size_t MatmulLayer::bias_size() const { return bias_.size(); }
+
 void MatmulLayer::to_cuda() {
   LayerParam::to_cuda();
   if (has_bias_) {

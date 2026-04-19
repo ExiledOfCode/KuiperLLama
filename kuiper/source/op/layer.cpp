@@ -184,6 +184,12 @@ const tensor::Tensor& LayerParam::get_weight(int32_t idx) const {
   return weights_.at(idx);
 }
 
+bool LayerParam::has_scales() const { return !scales_.is_empty(); }
+
+tensor::Tensor& LayerParam::get_scales() { return scales_; }
+
+const tensor::Tensor& LayerParam::get_scales() const { return scales_; }
+
 void LayerParam::to_cuda() {
   Layer::to_cuda();
   for (auto& weight : weights_) {

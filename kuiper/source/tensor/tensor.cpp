@@ -160,9 +160,7 @@ bool Tensor::assign(std::shared_ptr<base::Buffer> buffer) {
     return false;
   }
   if (buffer_) {
-    if (buffer_->device_type() != buffer->device_type()) {
-      LOG(ERROR) << "The device type of the new buffer is different from the original one.";
-    }
+    // Rebinding a tensor from CPU to CUDA (or back) is a valid transition during load/move.
   }
 
   size_t byte_size = this->byte_size();

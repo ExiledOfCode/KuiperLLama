@@ -13,6 +13,8 @@
 #include "tensor/tensor.h"
 
 namespace model {
+class PagedKVCache;
+
 struct OpProfileStat {
   std::string op_name;
   double total_ms = 0.0;
@@ -75,6 +77,18 @@ class Model {
 
   float sampling_temperature() const;
 
+  bool optimized_weight_loading() const;
+
+  bool paged_kv_cache_enabled() const;
+
+  int32_t paged_kv_cache_page_size() const;
+
+  int32_t paged_kv_cache_startup_tokens() const;
+
+  const void* contiguous_weight_data() const;
+
+  size_t contiguous_weight_data_byte_size() const;
+
  protected:
   virtual base::Status insert_buffer(ModelBufferType buffer_idx, const tensor::Tensor& tensor);
 
@@ -88,6 +102,14 @@ class Model {
 
   void notify_load_progress(size_t loaded_bytes, size_t total_bytes,
                             const std::string& stage) const;
+
+  bool use_paged_kv_cache() const;
+
+  bool init_paged_kv_cache();
+
+  bool ensure_paged_kv_cache(int32_t token_pos) const;
+
+  const PagedKVCache* paged_kv_cache() const;
 
   virtual int32_t post_processing(const tensor::Tensor& pos, bool is_prompt) const = 0;
 
@@ -120,6 +142,12 @@ class Model {
   base::TokenizerType tokenizer_type_ = base::TokenizerType::kEncodeUnknown;
   LoadProgressCallback load_progress_callback_;
   float sampling_temperature_ = 0.0f;
+  bool optimized_weight_loading_ = false;
+  bool paged_kv_cache_enabled_ = false;
+  int32_t paged_kv_cache_page_size_ = 256;
+  size_t weight_data_byte_size_ = 0;
+  std::shared_ptr<base::Buffer> device_weight_buffer_;
+  std::shared_ptr<PagedKVCache> paged_kv_cache_;
 };
 }  // namespace model
 #endif  // KUIPER_INCLUDE_MODEL_MODEL_H_

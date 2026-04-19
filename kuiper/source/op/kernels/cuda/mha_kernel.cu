@@ -49,9 +49,11 @@ __device__ void softmax_gpu(float* __restrict__ x, int size) {
 
 __global__ void multi_head_attention_kernel(int32_t pos, int32_t seq_len, float* query,
                                             float* score_ptr, float* output, float* key_cache,
-                                            float* value_cache, int32_t kv_dim, int32_t kv_mul,
-                                            int32_t head_num, int32_t head_size,
-                                            int32_t layer_offset) {
+                                            float* value_cache, float** key_page_table,
+                                            float** value_page_table, int32_t page_size,
+                                            bool paged_kv_cache, int32_t kv_dim, int32_t kv_mul,
+                                            int32_t head_num, int32_t head_size, int32_t layer_offset,
+                                            int32_t layer_index) {
   int head = blockIdx.x;
   if (head >= head_num) {
     return;
@@ -74,7 +76,16 @@ __global__ void multi_head_attention_kernel(int32_t pos, int32_t seq_len, float*
   int head_offset = (head / kv_mul) * head_size;
   // 计算自注意力分数
   for (int t = threadIdx.x; t <= pos; t += blockDim.x) {
-    float* key_head = key_cache + layer_offset + t * kv_dim + head_offset;
+    float* key_head = nullptr;
+    if (paged_kv_cache) {
+      const int page_idx = t / page_size;
+      const int page_token = t % page_size;
+      float* page_base = key_page_table[page_idx];
+      key_head =
+          page_base + layer_index * page_size * kv_dim + page_token * kv_dim + head_offset;
+    } else {
+      key_head = key_cache + layer_offset + t * kv_dim + head_offset;
+    }
 
     float score = 0.0f;
     for (int i = 0; i < head_size; i += 4) {
@@ -98,7 +109,16 @@ __global__ void multi_head_attention_kernel(int32_t pos, int32_t seq_len, float*
   for (int i = threadIdx.x; i < head_size; i += blockDim.x) {
     float value = 0.0f;
     for (int t = 0; t <= pos; t++) {
-      float* value_head = value_cache + layer_offset + t * kv_dim + head_offset;
+      float* value_head = nullptr;
+      if (paged_kv_cache) {
+        const int page_idx = t / page_size;
+        const int page_token = t % page_size;
+        float* page_base = value_page_table[page_idx];
+        value_head =
+            page_base + layer_index * page_size * kv_dim + page_token * kv_dim + head_offset;
+      } else {
+        value_head = value_cache + layer_offset + t * kv_dim + head_offset;
+      }
       float score = score_head[t];
       value += score * value_head[i];
     }
@@ -110,20 +130,24 @@ void mha_kernel_cu(int32_t pos, int32_t head_num, int32_t layer_index, int32_t s
                    int32_t kv_dim, int32_t kv_mul, int32_t head_size, const tensor::Tensor& mha_out,
                    const tensor::Tensor& query_tensor, const tensor::Tensor& score_tensor,
                    const tensor::Tensor& key_cache_tensor, const tensor::Tensor& value_cache_tensor,
-                   base::DeviceType device_type, CudaConfig* config) {
+                   const void* key_page_table, const void* value_page_table, int32_t page_size,
+                   bool paged_kv_cache, base::DeviceType device_type, CudaConfig* config) {
   UNUSED(device_type);
   int32_t layer_offset = layer_index * seq_len * kv_dim;
   float* query = const_cast<float*>(query_tensor.ptr<float>());
   float* score = const_cast<float*>(score_tensor.ptr<float>());
   float* output = const_cast<float*>(mha_out.ptr<float>());
 
-  float* key_cache = const_cast<float*>(key_cache_tensor.ptr<float>());
-  float* value_cache = const_cast<float*>(value_cache_tensor.ptr<float>());
+  float* key_cache = paged_kv_cache ? nullptr : const_cast<float*>(key_cache_tensor.ptr<float>());
+  float* value_cache =
+      paged_kv_cache ? nullptr : const_cast<float*>(value_cache_tensor.ptr<float>());
+  float** key_pages = const_cast<float**>(reinterpret_cast<float* const*>(key_page_table));
+  float** value_pages = const_cast<float**>(reinterpret_cast<float* const*>(value_page_table));
 
   cudaStream_t stream = config->stream;
   multi_head_attention_kernel<<<head_num, thread_num, head_size * sizeof(float), stream>>>(
-      pos, seq_len, query, score, output, key_cache, value_cache, kv_dim, kv_mul, head_num,
-      head_size, layer_offset);
+      pos, seq_len, query, score, output, key_cache, value_cache, key_pages, value_pages,
+      page_size, paged_kv_cache, kv_dim, kv_mul, head_num, head_size, layer_offset, layer_index);
 }
 
 }  // namespace kernel

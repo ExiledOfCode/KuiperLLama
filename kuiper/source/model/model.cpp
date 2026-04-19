@@ -1,11 +1,49 @@
 #include "model/model.h"
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstdio>
+#include <limits>
 #include <cuda_runtime_api.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include "model/paged_kv_cache.h"
 namespace model {
 namespace {
+
+bool env_flag_enabled(const char* env_name, bool default_value) {
+  const char* raw = std::getenv(env_name);
+  if (raw == nullptr) {
+    return default_value;
+  }
+  std::string text(raw);
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  if (text == "1" || text == "true" || text == "yes" || text == "on") {
+    return true;
+  }
+  if (text == "0" || text == "false" || text == "no" || text == "off") {
+    return false;
+  }
+  return default_value;
+}
+
+int32_t env_positive_int(const char* env_name, int32_t default_value) {
+  const char* raw = std::getenv(env_name);
+  if (raw == nullptr) {
+    return default_value;
+  }
+  char* end = nullptr;
+  long value = std::strtol(raw, &end, 10);
+  if (end == raw || value <= 0) {
+    return default_value;
+  }
+  if (value > std::numeric_limits<int32_t>::max()) {
+    return default_value;
+  }
+  return static_cast<int32_t>(value);
+}
 
 bool cuda_device_supports_bf16() {
   int device = 0;
@@ -32,7 +70,16 @@ Model::Model(base::TokenizerType tokenizer_type, base::ModelType model_type, std
       model_type_(model_type),
       token_path_(std::move(token_path)),
       model_path_(std::move(model_path)),
-      is_quant_model_(is_quant_model) {}
+      is_quant_model_(is_quant_model),
+      optimized_weight_loading_(env_flag_enabled("KLLM_OPTIMIZED_WEIGHT_LOADING", false)),
+      paged_kv_cache_enabled_(env_flag_enabled("KLLM_PAGED_KV_CACHE", false)),
+      paged_kv_cache_page_size_(env_positive_int("KLLM_PAGED_KV_CACHE_PAGE_SIZE", 256)) {
+  LOG(INFO) << "Optimized weight loading is "
+            << (optimized_weight_loading_ ? "enabled" : "disabled")
+            << " for model: " << model_path_;
+  LOG(INFO) << "Paged KV cache is " << (paged_kv_cache_enabled_ ? "enabled" : "disabled")
+            << " for model: " << model_path_ << ", page_size=" << paged_kv_cache_page_size_;
+}
 
 base::ModelType Model::model_type() const { return model_type_; }
 
@@ -56,12 +103,58 @@ void Model::set_sampling_temperature(float temperature) {
 
 float Model::sampling_temperature() const { return sampling_temperature_; }
 
+bool Model::optimized_weight_loading() const { return optimized_weight_loading_; }
+
+bool Model::paged_kv_cache_enabled() const { return paged_kv_cache_enabled_; }
+
+int32_t Model::paged_kv_cache_page_size() const { return paged_kv_cache_page_size_; }
+
+int32_t Model::paged_kv_cache_startup_tokens() const {
+  if (config_ == nullptr) {
+    return std::max(1, paged_kv_cache_page_size_);
+  }
+  return std::max(1, std::min(config_->seq_len_, paged_kv_cache_page_size_));
+}
+
+const void* Model::contiguous_weight_data() const {
+  return raw_model_data_ ? raw_model_data_->weight_data : nullptr;
+}
+
+size_t Model::contiguous_weight_data_byte_size() const { return weight_data_byte_size_; }
+
 void Model::notify_load_progress(size_t loaded_bytes, size_t total_bytes,
                                  const std::string& stage) const {
   if (load_progress_callback_) {
     load_progress_callback_(loaded_bytes, total_bytes, stage);
   }
 }
+
+bool Model::use_paged_kv_cache() const { return paged_kv_cache_enabled_; }
+
+bool Model::init_paged_kv_cache() {
+  if (!use_paged_kv_cache() || config_ == nullptr) {
+    return false;
+  }
+  if (!paged_kv_cache_) {
+    paged_kv_cache_ = std::make_shared<PagedKVCache>(
+        device_type_, config_->layer_num_, config_->seq_len_, config_->kv_dim_,
+        paged_kv_cache_startup_tokens());
+  }
+  return paged_kv_cache_->ensure_token_capacity(0);
+}
+
+bool Model::ensure_paged_kv_cache(int32_t token_pos) const {
+  if (!use_paged_kv_cache()) {
+    return true;
+  }
+  if (!paged_kv_cache_) {
+    LOG(ERROR) << "Paged KV cache is enabled but has not been initialized.";
+    return false;
+  }
+  return paged_kv_cache_->ensure_token_capacity(token_pos);
+}
+
+const PagedKVCache* Model::paged_kv_cache() const { return paged_kv_cache_.get(); }
 
 base::Status Model::insert_buffer(ModelBufferType buffer_idx, const tensor::Tensor& tensor) {
   if (buffers_.count(buffer_idx) > 0) {
@@ -88,6 +181,8 @@ bool Model::has_buffer(ModelBufferType buffer_idx) const { return buffers_.count
 
 base::Status Model::read_model_file() {
   using namespace base;
+  weight_data_byte_size_ = 0;
+  device_weight_buffer_.reset();
   if (model_path_.empty()) {
     return error::PathNotValid("Failed to open the weight file, the model path is empty!");
   }
@@ -199,6 +294,7 @@ base::Status Model::read_model_file() {
   if (weight_type_ == base::WeightType::kWeightTypeFp32 ||
       weight_type_ == base::WeightType::kWeightTypeInt8) {
     raw_model_data_->weight_data = static_cast<int8_t*>(raw_model_data_->data) + weight_data_offset;
+    weight_data_byte_size_ = raw_model_data_->file_size - weight_data_offset;
   } else {
     const size_t payload_bytes = raw_model_data_->file_size - weight_data_offset;
     if (payload_bytes % sizeof(uint16_t) != 0) {
@@ -210,10 +306,12 @@ base::Status Model::read_model_file() {
     if (device_type_ == base::DeviceType::kDeviceCUDA && cuda_device_supports_bf16()) {
       bf16_data->use_source_weights(source);
       weight_data_type_ = base::DataType::kDataTypeBf16;
+      weight_data_byte_size_ = payload_bytes;
       LOG(INFO) << "Enable native CUDA BF16 weight path for model: " << model_path_;
     } else {
       bf16_data->load_from_bf16(source, payload_bytes / sizeof(uint16_t));
       weight_data_type_ = base::DataType::kDataTypeFp32;
+      weight_data_byte_size_ = bf16_data->converted_weights.size() * sizeof(float);
       if (device_type_ == base::DeviceType::kDeviceCUDA) {
         LOG(WARNING) << "Current CUDA device does not support native BF16. "
                      << "Fallback to fp32 weights for model: " << model_path_;
@@ -338,6 +436,10 @@ std::string Model::decode(std::vector<int32_t> token_idxs) const {
 
 std::pair<tensor::Tensor, tensor::Tensor> Model::slice_kv_cache(int32_t layer_idx,
                                                                 int32_t token_pos) const {
+  if (use_paged_kv_cache()) {
+    CHECK_NE(paged_kv_cache_, nullptr);
+    return paged_kv_cache_->slot(layer_idx, token_pos, device_type_);
+  }
   int32_t layer_offset = layer_idx * config_->seq_len_ * config_->kv_dim_;
   int32_t cache_offset = layer_offset + token_pos * config_->kv_dim_;
 

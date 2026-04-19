@@ -23,6 +23,10 @@ class MatmulLayer : public LayerParam {
 
   const tensor::Tensor& get_bias(int32_t idx) const;
 
+  bool has_bias() const;
+
+  size_t bias_size() const;
+
   void to_cuda() override;
 
  private:
