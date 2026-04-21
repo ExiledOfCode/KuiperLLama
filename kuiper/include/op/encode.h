@@ -5,9 +5,6 @@
 #include <sentencepiece_processor.h>
 #endif
 #if defined (LLAMA3_SUPPORT) || defined (QWEN2_SUPPORT) || defined (QWEN3_SUPPORT)
-#include <absl/strings/str_join.h>
-#include <absl/strings/str_replace.h>
-#include <absl/strings/str_split.h>
 #include "base/tiktoken.h"
 #include "base/unordered_dense.h"
 #include "nlohmann/json.hpp"

@@ -296,7 +296,7 @@ void LLama2Model::create_param_layers() {
 
   const void* weight_embedding = raw_model_data_->weight(0);
   llama_layers_->embedding_layer_->set_weight(0, {std::abs(config_->vocab_size_), config_->dim_},
-                                              weight_embedding, cpu_device_type);
+                                              weight_embedding, cpu_device_type, weight_data_type_);
 
   // create all matmul layer
   int32_t dim = config_->dim_;
@@ -304,7 +304,8 @@ void LLama2Model::create_param_layers() {
   // create weight matrix for query
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto wq = std::make_shared<op::MatmulLayer>(device_type_, dim, dim);
-    wq->set_weight(0, {dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    wq->set_weight(0, {dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type,
+                   weight_data_type_);
     llama_layers_->wq_layers_.push_back(wq);
     pos += dim * dim;
   }
@@ -312,7 +313,8 @@ void LLama2Model::create_param_layers() {
   // create weight matrix for key
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto wk = std::make_shared<op::MatmulLayer>(device_type_, config_->kv_dim_, dim);
-    wk->set_weight(0, {config_->kv_dim_, dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    wk->set_weight(0, {config_->kv_dim_, dim}, this->raw_model_data_->weight(pos),
+                   cpu_device_type, weight_data_type_);
     llama_layers_->wk_layers_.push_back(wk);
     pos += config_->kv_dim_ * dim;
   }
@@ -320,7 +322,8 @@ void LLama2Model::create_param_layers() {
   // create weight matrix for value
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto wv = std::make_shared<op::MatmulLayer>(device_type_, config_->kv_dim_, dim);
-    wv->set_weight(0, {config_->kv_dim_, dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    wv->set_weight(0, {config_->kv_dim_, dim}, this->raw_model_data_->weight(pos),
+                   cpu_device_type, weight_data_type_);
     llama_layers_->wv_layers_.push_back(wv);
     pos += config_->kv_dim_ * dim;
   }
@@ -328,7 +331,8 @@ void LLama2Model::create_param_layers() {
   // create weight matrix for output
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto wo = std::make_shared<op::MatmulLayer>(device_type_, dim, dim);
-    wo->set_weight(0, {dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    wo->set_weight(0, {dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type,
+                   weight_data_type_);
     llama_layers_->wo_layers_.push_back(wo);
     pos += dim * dim;
   }
@@ -340,7 +344,8 @@ void LLama2Model::create_param_layers() {
   int32_t hidden_dim = config_->hidden_dim_;
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto w1 = std::make_shared<op::MatmulLayer>(device_type_, hidden_dim, dim);
-    w1->set_weight(0, {hidden_dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    w1->set_weight(0, {hidden_dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type,
+                   weight_data_type_);
     llama_layers_->w1_layers_.push_back(w1);
     pos += dim * hidden_dim;
   }
@@ -348,7 +353,8 @@ void LLama2Model::create_param_layers() {
   // w2 layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto w2 = std::make_shared<op::MatmulLayer>(device_type_, dim, hidden_dim);
-    w2->set_weight(0, {dim, hidden_dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    w2->set_weight(0, {dim, hidden_dim}, this->raw_model_data_->weight(pos), cpu_device_type,
+                   weight_data_type_);
     llama_layers_->w2_layers_.push_back(w2);
     pos += dim * hidden_dim;
   }
@@ -356,7 +362,8 @@ void LLama2Model::create_param_layers() {
   // w3 layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
     auto w3 = std::make_shared<op::MatmulLayer>(device_type_, hidden_dim, dim);
-    w3->set_weight(0, {hidden_dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    w3->set_weight(0, {hidden_dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type,
+                   weight_data_type_);
     llama_layers_->w3_layers_.push_back(w3);
     pos += dim * hidden_dim;
   }
@@ -364,17 +371,19 @@ void LLama2Model::create_param_layers() {
   // skip final rms weight
   pos += dim;
   // skip freqs_cos and freqs_sin weight
-  pos += config_->seq_len_ * config_->head_size_;
+  pos += 2 * config_->seq_len_ * config_->head_size_;
 
   llama_layers_->cls_layer_ =
       std::make_shared<op::MatmulLayer>(device_type_, config_->vocab_size_, dim);
   if (config_->is_shared_weight_) {
     // using token embedding weight
     llama_layers_->cls_layer_->set_weight(0, {config_->vocab_size_, dim},
-                                          this->raw_model_data_->weight(0), cpu_device_type);
+                                          this->raw_model_data_->weight(0), cpu_device_type,
+                                          weight_data_type_);
   } else {
     llama_layers_->cls_layer_->set_weight(0, {config_->vocab_size_, dim},
-                                          this->raw_model_data_->weight(pos), cpu_device_type);
+                                          this->raw_model_data_->weight(pos), cpu_device_type,
+                                          weight_data_type_);
   }
 
   // create rmsnorm layer
@@ -385,7 +394,8 @@ void LLama2Model::create_param_layers() {
         std::make_shared<op::RmsNormLayer>(device_type_, config_->dim_);
 
     const void* weight_rmsnorm = raw_model_data_->weight(rmsnorm_pos);
-    rms_norm_layer->set_weight(0, {config_->dim_}, weight_rmsnorm, cpu_device_type);
+    rms_norm_layer->set_weight(0, {config_->dim_}, weight_rmsnorm, cpu_device_type,
+                               weight_data_type_);
     llama_layers_->rmsnorm_layers_.push_back(rms_norm_layer);
     rmsnorm_pos += config_->dim_;
   }
@@ -402,7 +412,8 @@ void LLama2Model::create_param_layers() {
     std::shared_ptr<op::RmsNormLayer> rms_norm_layer =
         std::make_shared<op::RmsNormLayer>(device_type_, config_->dim_);
     const void* weight_rmsnorm = raw_model_data_->weight(rmsnorm_pos);
-    rms_norm_layer->set_weight(0, {config_->dim_}, weight_rmsnorm, cpu_device_type);
+    rms_norm_layer->set_weight(0, {config_->dim_}, weight_rmsnorm, cpu_device_type,
+                               weight_data_type_);
     llama_layers_->rmsnorm_layers_.push_back(rms_norm_layer);
 
     rmsnorm_pos += config_->dim_;
@@ -417,7 +428,8 @@ void LLama2Model::create_param_layers() {
       std::make_shared<op::RmsNormLayer>(device_type_, config_->dim_);
 
   const void* weight_rmsnorm_final = raw_model_data_->weight(rmsnorm_pos);
-  rms_final_layer->set_weight(0, {config_->dim_}, weight_rmsnorm_final, cpu_device_type);
+  rms_final_layer->set_weight(0, {config_->dim_}, weight_rmsnorm_final, cpu_device_type,
+                              weight_data_type_);
   llama_layers_->rmsnorm_layers_.push_back(rms_final_layer);
 }
 

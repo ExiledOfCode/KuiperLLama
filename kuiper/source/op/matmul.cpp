@@ -1,4 +1,6 @@
 #include "op/matmul.h"
+#include <cstdint>
+#include <cstring>
 #include "kernels/cpu/matmul_kernel.h"
 #include "kernels/kernels_interface.h"
 namespace op {
@@ -20,6 +22,13 @@ base::Status check_weight_tensor(const tensor::Tensor& tensor, base::DeviceType 
     return base::error::InvalidArgument("The tensor has a wrong dim.");
   }
   return base::error::Success();
+}
+
+float bf16_to_fp32(uint16_t value) {
+  uint32_t bits = static_cast<uint32_t>(value) << 16U;
+  float result = 0.f;
+  std::memcpy(&result, &bits, sizeof(result));
+  return result;
 }
 
 }  // namespace
@@ -102,26 +111,44 @@ base::Status MatmulLayer::forward() {
 }
 
 base::Status MatmulLayer::set_bias(int32_t idx, int32_t& dim, const void* bias_ptr,
-                                   base::DeviceType device_type) {
+                                   base::DeviceType device_type, base::DataType data_type) {
   CHECK_GE(idx, 0);
   CHECK_LT(idx, bias_.size());
   CHECK_NE(bias_ptr, nullptr);
 
-  size_t size = dim * sizeof(float);
-  std::shared_ptr<base::Buffer> buffer =
-      std::make_shared<base::Buffer>(size, nullptr, const_cast<void*>(bias_ptr), true);
-  if (device_type != base::DeviceType::kDeviceUnknown) {
-    buffer->set_device_type(device_type);
-  }
-
   if (!is_quant_layer_) {
-    tensor::Tensor bias(base::DataType::kDataTypeFp32, dim);
-    bias.set_device_type(device_type);
-    CHECK(bias.assign(buffer));
-    // LOG(INFO) << "bias:" << bias.index<float>(0);
-    bias_.at(idx) = bias;
+    CHECK(data_type == base::DataType::kDataTypeFp32 || data_type == base::DataType::kDataTypeBf16);
+    if (data_type == base::DataType::kDataTypeBf16) {
+      auto cpu_alloc = base::CPUDeviceAllocatorFactory::get_instance();
+      tensor::Tensor bias(base::DataType::kDataTypeFp32, dim, true, cpu_alloc);
+      bias.set_device_type(base::DeviceType::kDeviceCPU);
+      const auto* src = reinterpret_cast<const uint16_t*>(bias_ptr);
+      float* dst = bias.ptr<float>();
+      for (int32_t i = 0; i < dim; ++i) {
+        dst[i] = bf16_to_fp32(src[i]);
+      }
+      bias_.at(idx) = bias;
+    } else {
+      size_t size = dim * sizeof(float);
+      std::shared_ptr<base::Buffer> buffer =
+          std::make_shared<base::Buffer>(size, nullptr, const_cast<void*>(bias_ptr), true);
+      if (device_type != base::DeviceType::kDeviceUnknown) {
+        buffer->set_device_type(device_type);
+      }
+      tensor::Tensor bias(base::DataType::kDataTypeFp32, dim);
+      bias.set_device_type(device_type);
+      CHECK(bias.assign(buffer));
+      // LOG(INFO) << "bias:" << bias.index<float>(0);
+      bias_.at(idx) = bias;
+    }
   } else {
     // is quant layer
+    size_t size = dim * sizeof(float);
+    std::shared_ptr<base::Buffer> buffer =
+        std::make_shared<base::Buffer>(size, nullptr, const_cast<void*>(bias_ptr), true);
+    if (device_type != base::DeviceType::kDeviceUnknown) {
+      buffer->set_device_type(device_type);
+    }
     tensor::Tensor bias(base::DataType::kDataTypeInt8, dim);
     bias.set_device_type(device_type);
     CHECK(bias.assign(buffer));

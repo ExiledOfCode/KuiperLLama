@@ -1,5 +1,22 @@
 #include "rope_kernel.cuh"
+#include <cstdlib>
 namespace kernel {
+namespace {
+
+float resolve_rope_theta(float default_theta) {
+  const char* raw = std::getenv("KLLM_ROPE_THETA");
+  if (raw == nullptr || *raw == '\0') {
+    return default_theta;
+  }
+  char* end = nullptr;
+  const float value = std::strtof(raw, &end);
+  if (end == raw || value <= 0.0f) {
+    return default_theta;
+  }
+  return value;
+}
+
+}  // namespace
 
 #if defined (LLAMA3_SUPPORT)
 __global__ void rope_kernel_cu_fp32(int pos, int dim, int kv_dim, int head_size,
@@ -35,11 +52,12 @@ __global__ void rope_kernel_cu_fp32(int pos, int dim, int kv_dim, int head_size,
   }
 }
 
-__global__ void sin_cos_calc(int head_size, int max_seq_len, float* sin_cache, float* cos_cache) {
+__global__ void sin_cos_calc(int head_size, int max_seq_len, float rope_theta, float* sin_cache,
+                             float* cos_cache) {
   int idx = threadIdx.x + blockDim.x * blockIdx.x;
   int head_dim = idx % head_size;
   for (int pos = 0; pos < max_seq_len; ++pos) {
-    float freq = 1.0f / pow(500000.0f, static_cast<float>(head_dim) / static_cast<float>(head_size));
+    float freq = 1.0f / pow(rope_theta, static_cast<float>(head_dim) / static_cast<float>(head_size));
     float val = static_cast<float>(pos) * freq;
     float fcr = cosf(val);
     float fci = sinf(val);
@@ -81,11 +99,12 @@ __global__ void rope_kernel_cu_fp32(int pos, int dim, int kv_dim, int head_size,
   }
 }
 
-__global__ void sin_cos_calc(int head_size, int max_seq_len, float* sin_cache, float* cos_cache) {
+__global__ void sin_cos_calc(int head_size, int max_seq_len, float rope_theta, float* sin_cache,
+                             float* cos_cache) {
   int idx = threadIdx.x + blockDim.x * blockIdx.x;
   int head_dim = idx % head_size;
   for (int pos = 0; pos < max_seq_len; ++pos) {
-    float freq = 1.0f / pow(1000000.0f, static_cast<float>(head_dim) / static_cast<float>(head_size));
+    float freq = 1.0f / pow(rope_theta, static_cast<float>(head_dim) / static_cast<float>(head_size));
     float val = static_cast<float>(pos) * freq;
     float fcr = cosf(val);
     float fci = sinf(val);
@@ -121,11 +140,12 @@ __global__ void rope_kernel_cu_fp32(int pos, int dim, int kv_dim, int head_size,
   rope_calc(fcr, fci, const_cast<float*>(input_k), idx);
 }
 
-__global__ void sin_cos_calc(int head_size, int max_seq_len, float* sin_cache, float* cos_cache) {
+__global__ void sin_cos_calc(int head_size, int max_seq_len, float rope_theta, float* sin_cache,
+                             float* cos_cache) {
   int idx = threadIdx.x + blockDim.x * blockIdx.x;
   int head_dim = idx % head_size;
   for (int pos = 0; pos < max_seq_len; ++pos) {
-    float freq = 1.0f / pow(10000.0f, static_cast<float>(head_dim) / static_cast<float>(head_size));
+    float freq = 1.0f / pow(rope_theta, static_cast<float>(head_dim) / static_cast<float>(head_size));
     float val = static_cast<float>(pos) * freq;
     float fcr = cosf(val);
     float fci = sinf(val);
@@ -140,12 +160,20 @@ void sin_cos_cache_calc_cu(int head_size, int max_seq_len, const tensor::Tensor&
   CHECK_EQ(sin_cache.is_empty(), false);
   CHECK_EQ(cos_cache.is_empty(), false);
   int threads = head_size;
+#if defined (LLAMA3_SUPPORT)
+  const float rope_theta = resolve_rope_theta(500000.0f);
+#elif defined (QWEN2_SUPPORT) || defined (QWEN3_SUPPORT)
+  const float rope_theta = resolve_rope_theta(1000000.0f);
+#else
+  const float rope_theta = resolve_rope_theta(10000.0f);
+#endif
   if (stream) {
-    sin_cos_calc<<<1, threads, 0, stream>>>(head_size, max_seq_len,
+    sin_cos_calc<<<1, threads, 0, stream>>>(head_size, max_seq_len, rope_theta,
                                             const_cast<float*>(sin_cache.ptr<float>()),
                                             const_cast<float*>(cos_cache.ptr<float>()));
   } else {
-    sin_cos_calc<<<1, threads>>>(head_size, max_seq_len, const_cast<float*>(sin_cache.ptr<float>()),
+    sin_cos_calc<<<1, threads>>>(head_size, max_seq_len, rope_theta,
+                                 const_cast<float*>(sin_cache.ptr<float>()),
                                  const_cast<float*>(cos_cache.ptr<float>()));
   }
 }

@@ -1,11 +1,30 @@
 #include "rope_kernel.h"
+#include <cstdlib>
 namespace kernel {
+namespace {
+
+float resolve_rope_theta(float default_theta) {
+  const char* raw = std::getenv("KLLM_ROPE_THETA");
+  if (raw == nullptr || *raw == '\0') {
+    return default_theta;
+  }
+  char* end = nullptr;
+  const float value = std::strtof(raw, &end);
+  if (end == raw || value <= 0.0f) {
+    return default_theta;
+  }
+  return value;
+}
+
+}  // namespace
+
 #if defined (LLAMA3_SUPPORT)
 void sin_cos_cache_calc_cpu(int head_size, int max_seq_len, float* sin_cache, float* cos_cache) {
+  const float rope_theta = resolve_rope_theta(500000.0f);
   for (int pos = 0; pos < max_seq_len; ++pos) {
     for (int head_dim = 0; head_dim < head_size; ++head_dim) {
       float freq =
-          1.0f / std::pow(500000.0f, static_cast<float>(head_dim) / static_cast<float>(head_size));
+          1.0f / std::pow(rope_theta, static_cast<float>(head_dim) / static_cast<float>(head_size));
       float val = static_cast<float>(pos) * freq;
       float fcr = cosf(val);
       float fci = sinf(val);
@@ -42,10 +61,11 @@ void rope_kernel_cpu(int32_t dim, int32_t kv_dim, int32_t head_size, const tenso
 }
 #elif defined (QWEN2_SUPPORT) || defined (QWEN3_SUPPORT)
 void sin_cos_cache_calc_cpu(int head_size, int max_seq_len, float* sin_cache, float* cos_cache) {
+  const float rope_theta = resolve_rope_theta(1000000.0f);
   for (int pos = 0; pos < max_seq_len; ++pos) {
     for (int head_dim = 0; head_dim < head_size; ++head_dim) {
       float freq =
-          1.0f / std::pow(1000000.0f, static_cast<float>(head_dim) / static_cast<float>(head_size));
+          1.0f / std::pow(rope_theta, static_cast<float>(head_dim) / static_cast<float>(head_size));
       float val = static_cast<float>(pos) * freq;
       float fcr = cosf(val);
       float fci = sinf(val);
@@ -82,10 +102,11 @@ void rope_kernel_cpu(int32_t dim, int32_t kv_dim, int32_t head_size, const tenso
 }
 #else
 void sin_cos_cache_calc_cpu(int head_size, int max_seq_len, float* sin_cache, float* cos_cache) {
+  const float rope_theta = resolve_rope_theta(10000.0f);
   for (int pos = 0; pos < max_seq_len; ++pos) {
     for (int head_dim = 0; head_dim < head_size; ++head_dim) {
       float freq =
-          1.0f / std::pow(10000.0f, static_cast<float>(head_dim) / static_cast<float>(head_size));
+          1.0f / std::pow(rope_theta, static_cast<float>(head_dim) / static_cast<float>(head_size));
       float val = static_cast<float>(pos) * freq;
       float fcr = cosf(val);
       float fci = sinf(val);

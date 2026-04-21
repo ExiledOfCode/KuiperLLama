@@ -153,6 +153,13 @@ if (LLAMA3_SUPPORT OR QWEN2_SUPPORT OR QWEN3_SUPPORT)
   enable_json_regex_support(llama)
 endif()
 
+if (LLAMA3_SUPPORT)
+  add_library(llama_llama3 SHARED ${DIR_TENSOR} ${DIR_BASE} ${DIR_OP} ${DIR_KERNEL} ${DIR_MODEL} ${DIR_KERNEL_CPU} ${DIR_KERNEL_CUDA} ${DIR_KERNEL} ${DIR_SAMPLE})
+  configure_llama_target(llama_llama3)
+  target_compile_definitions(llama_llama3 PUBLIC LLAMA3_SUPPORT)
+  enable_json_regex_support(llama_llama3)
+endif()
+
 if (QWEN2_SUPPORT)
   add_library(llama_qwen2 SHARED ${DIR_TENSOR} ${DIR_BASE} ${DIR_OP} ${DIR_KERNEL} ${DIR_MODEL} ${DIR_KERNEL_CPU} ${DIR_KERNEL_CUDA} ${DIR_KERNEL} ${DIR_SAMPLE})
   configure_llama_target(llama_qwen2)

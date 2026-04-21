@@ -5,6 +5,8 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <queue>
@@ -18,7 +20,15 @@
 #include <glog/logging.h>
 #include <nlohmann/json.hpp>
 
-#include "model/qwen2.h"
+#ifndef KLLM_MODEL_HEADER
+#define KLLM_MODEL_HEADER "model/qwen2.h"
+#endif
+
+#include KLLM_MODEL_HEADER
+
+#ifndef KLLM_MODEL_CLASS
+#define KLLM_MODEL_CLASS model::Qwen2Model
+#endif
 
 namespace {
 
@@ -185,7 +195,7 @@ void emit_load_progress_json(size_t loaded_bytes, size_t total_bytes, const std:
   std::cout.flush();
 }
 
-std::vector<std::string> build_token_pieces_preview(const model::Qwen2Model& model,
+std::vector<std::string> build_token_pieces_preview(const KLLM_MODEL_CLASS& model,
                                                     const std::vector<int32_t>& token_ids,
                                                     size_t limit) {
   const size_t count = std::min(limit, token_ids.size());
@@ -269,7 +279,44 @@ void clear_tensor_buffer(const tensor::Tensor& tensor) {
   allocator->memset_zero(buffer->ptr(), buffer->byte_size(), nullptr, true);
 }
 
-void reset_generation_state(const model::Qwen2Model& model) {
+void configure_rope_theta_env(const char* checkpoint_path, const char* tokenizer_path) {
+  namespace fs = std::filesystem;
+  std::vector<fs::path> candidates;
+  if (checkpoint_path != nullptr && *checkpoint_path != '\0') {
+    candidates.emplace_back(fs::path(checkpoint_path).parent_path() / "config.json");
+  }
+  if (tokenizer_path != nullptr && *tokenizer_path != '\0') {
+    const fs::path tokenizer_dir = fs::path(tokenizer_path).parent_path() / "config.json";
+    if (std::find(candidates.begin(), candidates.end(), tokenizer_dir) == candidates.end()) {
+      candidates.push_back(tokenizer_dir);
+    }
+  }
+
+  for (const auto& config_path : candidates) {
+    if (!fs::exists(config_path)) {
+      continue;
+    }
+    try {
+      std::ifstream input(config_path);
+      json payload = json::parse(input);
+      if (!payload.contains("rope_theta")) {
+        continue;
+      }
+      const double rope_theta = payload.at("rope_theta").get<double>();
+      if (rope_theta <= 0.0) {
+        continue;
+      }
+      const std::string rope_text = std::to_string(rope_theta);
+      setenv("KLLM_ROPE_THETA", rope_text.c_str(), 1);
+      return;
+    } catch (const std::exception&) {
+      continue;
+    }
+  }
+  unsetenv("KLLM_ROPE_THETA");
+}
+
+void reset_generation_state(const KLLM_MODEL_CLASS& model) {
   using model::ModelBufferType;
   const std::vector<ModelBufferType> runtime_buffers = {
       ModelBufferType::kInputTokens,     ModelBufferType::kInputEmbeddings,
@@ -289,7 +336,7 @@ void reset_generation_state(const model::Qwen2Model& model) {
   }
 }
 
-GenerationResult generate(const model::Qwen2Model& model, const std::string& sentence,
+GenerationResult generate(const KLLM_MODEL_CLASS& model, const std::string& sentence,
                           int max_new_tokens, bool emit_trace,
                           const std::atomic<bool>* cancel_requested = nullptr) {
   reset_generation_state(model);
@@ -311,12 +358,13 @@ GenerationResult generate(const model::Qwen2Model& model, const std::string& sen
           << "。请减少历史轮数或降低 max_token。";
     return {error.str(), 0};
   }
+  int32_t effective_max_new_tokens = requested_max_new_tokens;
   if (max_seq_len > 0 && prompt_len + requested_max_new_tokens > max_seq_len) {
-    std::ostringstream error;
-    error << "当前请求超过模型上下文长度：prompt_tokens=" << prompt_len
-          << ", max_token=" << requested_max_new_tokens << ", seq_len=" << max_seq_len
-          << "。请减少历史轮数或降低 max_token。";
-    return {error.str(), 0};
+    effective_max_new_tokens = std::max(1, max_seq_len - prompt_len);
+    std::fprintf(stderr,
+                 "[WARN] max_new_tokens clamped from %d to %d because prompt_tokens=%d and "
+                 "seq_len=%d\n",
+                 requested_max_new_tokens, effective_max_new_tokens, prompt_len, max_seq_len);
   }
 
   const auto step2_begin = std::chrono::steady_clock::now();
@@ -359,7 +407,7 @@ GenerationResult generate(const model::Qwen2Model& model, const std::string& sen
   if (emit_trace) {
     model.reset_profile_stats();
   }
-  const int32_t total_steps = prompt_len + requested_max_new_tokens;
+  const int32_t total_steps = prompt_len + effective_max_new_tokens;
   const auto step3_begin = std::chrono::steady_clock::now();
 
   int32_t pos = 0;
@@ -523,7 +571,7 @@ GenerationResult generate(const model::Qwen2Model& model, const std::string& sen
   return {response, std::min(pos, total_steps), cancelled};
 }
 
-bool init_model(model::Qwen2Model& model) {
+bool init_model(KLLM_MODEL_CLASS& model) {
   model.set_load_progress_callback(
       [](size_t loaded_bytes, size_t total_bytes, const std::string& stage) {
         emit_load_progress_json(loaded_bytes, total_bytes, stage);
@@ -582,7 +630,8 @@ void print_result(const GenerationResult& result, double duration_sec, bool prin
 
 int run_single_shot(const char* checkpoint_path, const char* tokenizer_path, const std::string& prompt,
                     int max_steps, float temperature) {
-  model::Qwen2Model model(base::TokenizerType::kEncodeBpe, tokenizer_path, checkpoint_path, false);
+  configure_rope_theta_env(checkpoint_path, tokenizer_path);
+  KLLM_MODEL_CLASS model(base::TokenizerType::kEncodeBpe, tokenizer_path, checkpoint_path, false);
   model.set_sampling_temperature(temperature);
   if (!init_model(model)) {
     return -1;
@@ -599,7 +648,8 @@ int run_single_shot(const char* checkpoint_path, const char* tokenizer_path, con
 
 int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_steps,
               float temperature) {
-  model::Qwen2Model model(base::TokenizerType::kEncodeBpe, tokenizer_path, checkpoint_path, false);
+  configure_rope_theta_env(checkpoint_path, tokenizer_path);
+  KLLM_MODEL_CLASS model(base::TokenizerType::kEncodeBpe, tokenizer_path, checkpoint_path, false);
   model.set_sampling_temperature(temperature);
   if (!init_model(model)) {
     return -1;
