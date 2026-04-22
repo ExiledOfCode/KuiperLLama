@@ -187,6 +187,11 @@ void emit_load_progress_json(size_t loaded_bytes, size_t total_bytes, const std:
   std::cout.flush();
 }
 
+void emit_response_chunk_json(const std::string& text) {
+  std::cout << "[RESPONSE_CHUNK]" << json{{"text", sanitize_utf8(text)}}.dump() << std::endl;
+  std::cout.flush();
+}
+
 std::vector<std::string> build_token_pieces_preview(const model::Qwen3Model& model,
                                                     const std::vector<int32_t>& token_ids,
                                                     size_t limit) {
@@ -491,6 +496,11 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
         if (repeated) {
           break;
         }
+      }
+
+      const std::string token_piece = sanitize_utf8(model.decode(std::vector<int32_t>{next}));
+      if (!token_piece.empty()) {
+        emit_response_chunk_json(token_piece);
       }
     }
     pos += 1;

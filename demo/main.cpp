@@ -32,6 +32,75 @@ namespace {
 
 using json = nlohmann::json;
 
+bool is_continuation_byte(unsigned char value) { return (value & 0xC0U) == 0x80U; }
+
+std::string sanitize_utf8(const std::string& text) {
+  std::string output;
+  output.reserve(text.size());
+
+  const auto* bytes = reinterpret_cast<const unsigned char*>(text.data());
+  const size_t size = text.size();
+  size_t index = 0;
+  while (index < size) {
+    const unsigned char ch = bytes[index];
+    if (ch <= 0x7FU) {
+      output.push_back(static_cast<char>(ch));
+      ++index;
+      continue;
+    }
+
+    size_t width = 0;
+    if ((ch & 0xE0U) == 0xC0U) {
+      if (ch >= 0xC2U) {
+        width = 2;
+      }
+    } else if ((ch & 0xF0U) == 0xE0U) {
+      width = 3;
+    } else if ((ch & 0xF8U) == 0xF0U) {
+      if (ch <= 0xF4U) {
+        width = 4;
+      }
+    }
+
+    if (width == 0 || index + width > size) {
+      output.push_back('?');
+      ++index;
+      continue;
+    }
+
+    bool valid = true;
+    for (size_t offset = 1; offset < width; ++offset) {
+      if (!is_continuation_byte(bytes[index + offset])) {
+        valid = false;
+        break;
+      }
+    }
+    if (valid && width == 3) {
+      const unsigned char c1 = bytes[index + 1];
+      if ((ch == 0xE0U && c1 < 0xA0U) || (ch == 0xEDU && c1 >= 0xA0U)) {
+        valid = false;
+      }
+    }
+    if (valid && width == 4) {
+      const unsigned char c1 = bytes[index + 1];
+      if ((ch == 0xF0U && c1 < 0x90U) || (ch == 0xF4U && c1 >= 0x90U)) {
+        valid = false;
+      }
+    }
+
+    if (!valid) {
+      output.push_back('?');
+      ++index;
+      continue;
+    }
+
+    output.append(text, index, width);
+    index += width;
+  }
+
+  return output;
+}
+
 struct GenerationResult {
   std::string response;
   int32_t steps = 0;
@@ -103,6 +172,11 @@ void emit_load_progress_json(size_t loaded_bytes, size_t total_bytes, const std:
                     {"stage", stage}}
                    .dump()
             << std::endl;
+  std::cout.flush();
+}
+
+void emit_response_chunk_json(const std::string& text) {
+  std::cout << "[RESPONSE_CHUNK]" << json{{"text", sanitize_utf8(text)}}.dump() << std::endl;
   std::cout.flush();
 }
 
@@ -240,6 +314,11 @@ GenerationResult generate(const KLLM_MODEL_CLASS& model, const std::string& sent
       }
       if (same_token_run >= 24) {
         break;
+      }
+
+      const std::string token_piece = sanitize_utf8(model.decode(std::vector<int32_t>{next}));
+      if (!token_piece.empty()) {
+        emit_response_chunk_json(token_piece);
       }
     }
     pos += 1;

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import struct
 import sys
 import time
 from pathlib import Path
+from threading import Thread
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
 
 KMDL_MAGIC = 0x4B4D444C
@@ -134,6 +136,67 @@ class DeepSeekQwenInfer:
         response = sanitize_response(response)
         return response, int(generated_ids.shape[0]), duration
 
+    def generate_stream(self, prompt: str, max_new_tokens: int | None = None, temperature: float | None = None):
+        model_prompt = normalize_prompt(prompt)
+        inputs = self.tokenizer(model_prompt, return_tensors="pt", add_special_tokens=False)
+        prompt_token_count = int(inputs["input_ids"].shape[1])
+        effective_max_new_tokens = self._effective_max_new_tokens(
+            prompt_token_count,
+            self.max_new_tokens if max_new_tokens is None else max_new_tokens,
+        )
+        temperature_value = self.temperature if temperature is None else max(0.0, float(temperature))
+
+        inputs = {key: value.to(self.device) for key, value in inputs.items()}
+        generation_kwargs = {
+            "max_new_tokens": effective_max_new_tokens,
+            "do_sample": temperature_value > 0.0,
+            "pad_token_id": self.tokenizer.eos_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+        if temperature_value > 0.0:
+            generation_kwargs["temperature"] = temperature_value
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=False,
+        )
+        generation_kwargs["streamer"] = streamer
+
+        error: Exception | None = None
+
+        def _worker():
+            nonlocal error
+            try:
+                with torch.inference_mode():
+                    self.model.generate(**inputs, **generation_kwargs)
+            except Exception as exc:
+                error = exc
+
+        start = time.perf_counter()
+        worker = Thread(target=_worker, daemon=True)
+        worker.start()
+
+        response_parts: list[str] = []
+        for chunk in streamer:
+            piece = str(chunk or "")
+            if not piece:
+                continue
+            response_parts.append(piece)
+            yield piece
+
+        worker.join()
+        if error is not None:
+            raise error
+
+        duration = time.perf_counter() - start
+        response = "".join(response_parts)
+        if "<think>" in model_prompt and "<think>" not in response:
+            response = "<think>\n" + response
+        response = sanitize_response(response)
+        steps = len(self.tokenizer(response, add_special_tokens=False)["input_ids"]) if response else 0
+        return response, steps, duration
+
 
 def print_result(response: str, steps: int, duration: float, print_stats: bool) -> None:
     print("[RESPONSE_START]")
@@ -144,6 +207,11 @@ def print_result(response: str, steps: int, duration: float, print_stats: bool) 
         speed = (steps / duration) if duration > 0 else 0.0
         print(f"[STATS] steps={steps} duration={duration:.6f} steps_per_s={speed:.6f}", file=sys.stderr)
         sys.stderr.flush()
+
+
+def print_chunk(text: str) -> None:
+    print(f"[RESPONSE_CHUNK]{json.dumps({'text': str(text or '')}, ensure_ascii=False)}")
+    sys.stdout.flush()
 
 
 def run_single_shot(checkpoint_path: str, tokenizer_path: str, prompt: str, max_new_tokens: int, temperature: float) -> int:
@@ -186,7 +254,14 @@ def run_serve(checkpoint_path: str, tokenizer_path: str, max_new_tokens: int, te
 
         prompt = "\n".join(prompt_lines)
         try:
-            response, steps, duration = engine.generate(prompt)
+            stream = engine.generate_stream(prompt)
+            while True:
+                try:
+                    chunk = next(stream)
+                except StopIteration as stop:
+                    response, steps, duration = stop.value
+                    break
+                print_chunk(chunk)
         except Exception as exc:
             response = str(exc)
             steps = 0
