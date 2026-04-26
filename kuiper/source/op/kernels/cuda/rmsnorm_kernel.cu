@@ -1,8 +1,158 @@
 #include <device_launch_parameters.h>
 #include <cuda_bf16.h>
+#include <cctype>
+#include <cstdlib>
+#include <mutex>
+#include <string>
 #include <cub/block/block_reduce.cuh>
 #include "rmsnorm_kernel.cuh"
 namespace kernel {
+namespace {
+
+enum class RMSNormCudaImpl {
+  kKuiper = 0,
+  kLabWarpReduce = 1,
+};
+
+const char* rmsnorm_impl_name(RMSNormCudaImpl impl) {
+  switch (impl) {
+    case RMSNormCudaImpl::kLabWarpReduce:
+      return "lab_warp_reduce";
+    case RMSNormCudaImpl::kKuiper:
+    default:
+      return "kuiper_cuda";
+  }
+}
+
+RMSNormCudaImpl resolve_rmsnorm_impl() {
+  const char* raw = std::getenv("KLLM_OP_RMSNORM_IMPL");
+  if (raw == nullptr || *raw == '\0') {
+    return RMSNormCudaImpl::kKuiper;
+  }
+
+  std::string value(raw);
+  for (char& ch : value) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  if (value == "kuiper_cuda" || value == "kuiper" || value == "default" || value == "auto") {
+    return RMSNormCudaImpl::kKuiper;
+  }
+  if (value == "lab_warp_reduce" || value == "lab") {
+    return RMSNormCudaImpl::kLabWarpReduce;
+  }
+
+  LOG(WARNING) << "Unknown KLLM_OP_RMSNORM_IMPL=" << value
+               << ", fallback to kuiper_cuda.";
+  return RMSNormCudaImpl::kKuiper;
+}
+
+RMSNormCudaImpl selected_rmsnorm_impl() {
+  static const RMSNormCudaImpl impl = resolve_rmsnorm_impl();
+  static const char* impl_name = rmsnorm_impl_name(impl);
+  static std::once_flag log_once;
+  std::call_once(log_once, []() {
+    LOG(INFO) << "Selected CUDA RMSNorm implementation: " << impl_name;
+  });
+  return impl;
+}
+
+template <typename T>
+__device__ inline float lab_weight_to_float(T value);
+
+template <>
+__device__ inline float lab_weight_to_float<float>(float value) {
+  return value;
+}
+
+template <>
+__device__ inline float lab_weight_to_float<__nv_bfloat16>(__nv_bfloat16 value) {
+  return __bfloat162float(value);
+}
+
+template <typename WeightT>
+const WeightT* rmsnorm_weight_ptr(const tensor::Tensor& weight);
+
+template <>
+const float* rmsnorm_weight_ptr<float>(const tensor::Tensor& weight) {
+  return weight.ptr<float>();
+}
+
+template <>
+const __nv_bfloat16* rmsnorm_weight_ptr<__nv_bfloat16>(const tensor::Tensor& weight) {
+  return reinterpret_cast<const __nv_bfloat16*>(weight.ptr<uint16_t>());
+}
+
+__device__ inline float warp_reduce_sum_lab(float value, unsigned mask = 0xffffffffu) {
+  value += __shfl_down_sync(mask, value, 16);
+  value += __shfl_down_sync(mask, value, 8);
+  value += __shfl_down_sync(mask, value, 4);
+  value += __shfl_down_sync(mask, value, 2);
+  value += __shfl_down_sync(mask, value, 1);
+  return value;
+}
+
+template <typename WeightT>
+__global__ void row_rmsnorm_lab_kernel(const float* in, const WeightT* wei, float* out, int rows,
+                                       int cols, float eps) {
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int lane = tid & 31;
+  const int wid = tid >> 5;
+  const int warp_count = (blockDim.x + 31) >> 5;
+  if (row >= rows) {
+    return;
+  }
+
+  __shared__ float warp_sums[32];
+  __shared__ float inv_rms;
+
+  const float* row_in = in + static_cast<size_t>(row) * cols;
+  float* row_out = out + static_cast<size_t>(row) * cols;
+
+  float sum = 0.0f;
+  for (int idx = tid; idx < cols; idx += blockDim.x) {
+    const float value = row_in[idx];
+    sum += value * value;
+  }
+
+  sum = warp_reduce_sum_lab(sum);
+  if (lane == 0) {
+    warp_sums[wid] = sum;
+  }
+  __syncthreads();
+
+  if (wid == 0) {
+    float block_sum = (lane < warp_count) ? warp_sums[lane] : 0.0f;
+    block_sum = warp_reduce_sum_lab(block_sum);
+    if (lane == 0) {
+      inv_rms = rsqrtf(block_sum / static_cast<float>(cols) + eps);
+    }
+  }
+  __syncthreads();
+
+  for (int idx = tid; idx < cols; idx += blockDim.x) {
+    row_out[idx] = lab_weight_to_float(wei[idx]) * row_in[idx] * inv_rms;
+  }
+}
+
+template <typename WeightT>
+void launch_rmsnorm_lab_kernel(const tensor::Tensor& input, const tensor::Tensor& weight,
+                               const tensor::Tensor& output, int rows, int cols, float eps,
+                               void* stream) {
+  constexpr int kThreads = 256;
+  const WeightT* weight_ptr = rmsnorm_weight_ptr<WeightT>(weight);
+  if (stream) {
+    cudaStream_t stream_ = static_cast<cudaStream_t>(stream);
+    row_rmsnorm_lab_kernel<<<rows, kThreads, 0, stream_>>>(
+        input.ptr<float>(), weight_ptr, const_cast<float*>(output.ptr<float>()), rows, cols, eps);
+  } else {
+    row_rmsnorm_lab_kernel<<<rows, kThreads>>>(
+        input.ptr<float>(), weight_ptr, const_cast<float*>(output.ptr<float>()), rows, cols, eps);
+  }
+}
+
+}  // namespace
+
 template <typename T>
 __device__ inline float rmsnorm_to_float(T value);
 
@@ -177,8 +327,8 @@ static __global__ void row_rmsnorm_f32_mixed(float* in, const WeightT* wei, floa
   }
 }
 
-void rmsnorm_kernel_cu(const tensor::Tensor& input, const tensor::Tensor& weight,
-                       const tensor::Tensor& output, void* stream) {
+void rmsnorm_kernel_cu_kuiper(const tensor::Tensor& input, const tensor::Tensor& weight,
+                              const tensor::Tensor& output, void* stream) {
   CHECK(!input.is_empty());
   CHECK(!weight.is_empty());
   CHECK(!output.is_empty());
@@ -218,8 +368,8 @@ void rmsnorm_kernel_cu(const tensor::Tensor& input, const tensor::Tensor& weight
   }
 }
 
-void rmsnorm_kernel_cu_dim(const tensor::Tensor& input, const tensor::Tensor& weight,
-                           const tensor::Tensor& output, int32_t dim, void* stream) {
+void rmsnorm_kernel_cu_dim_kuiper(const tensor::Tensor& input, const tensor::Tensor& weight,
+                                  const tensor::Tensor& output, int32_t dim, void* stream) {
   UNUSED(dim);
   CHECK(!input.is_empty());
   CHECK(!weight.is_empty());
@@ -258,6 +408,57 @@ void rmsnorm_kernel_cu_dim(const tensor::Tensor& input, const tensor::Tensor& we
       row_rmsnorm_f32_dim<<<dim_size, threads_num>>>(in_ptr, wei_ptr, out_ptr, dim_size, size,
                                                      eps);
     }
+  }
+}
+
+void rmsnorm_kernel_cu_lab(const tensor::Tensor& input, const tensor::Tensor& weight,
+                           const tensor::Tensor& output, int rows, int cols, void* stream) {
+  CHECK(!input.is_empty());
+  CHECK(!weight.is_empty());
+  CHECK(!output.is_empty());
+  CHECK(input.device_type() == base::DeviceType::kDeviceCUDA &&
+        weight.device_type() == base::DeviceType::kDeviceCUDA &&
+        output.device_type() == base::DeviceType::kDeviceCUDA);
+
+#if defined(QWEN2_SUPPORT) || defined(QWEN3_SUPPORT)
+  const float eps = 1e-6f;
+#else
+  const float eps = 1e-5f;
+#endif
+
+  if (weight.data_type() == base::DataType::kDataTypeBf16) {
+    launch_rmsnorm_lab_kernel<__nv_bfloat16>(input, weight, output, rows, cols, eps, stream);
+  } else {
+    launch_rmsnorm_lab_kernel<float>(input, weight, output, rows, cols, eps, stream);
+  }
+}
+
+void rmsnorm_kernel_cu(const tensor::Tensor& input, const tensor::Tensor& weight,
+                       const tensor::Tensor& output, void* stream) {
+  switch (selected_rmsnorm_impl()) {
+    case RMSNormCudaImpl::kLabWarpReduce:
+      rmsnorm_kernel_cu_lab(input, weight, output, 1, static_cast<int>(input.size()), stream);
+      return;
+    case RMSNormCudaImpl::kKuiper:
+    default:
+      rmsnorm_kernel_cu_kuiper(input, weight, output, stream);
+      return;
+  }
+}
+
+void rmsnorm_kernel_cu_dim(const tensor::Tensor& input, const tensor::Tensor& weight,
+                           const tensor::Tensor& output, int32_t dim, void* stream) {
+  const int total_size = static_cast<int>(input.size());
+  const int row_size = input.get_dim(input.dims_size() - 1);
+  const int rows = row_size > 0 ? total_size / row_size : 0;
+  switch (selected_rmsnorm_impl()) {
+    case RMSNormCudaImpl::kLabWarpReduce:
+      rmsnorm_kernel_cu_lab(input, weight, output, rows, row_size, stream);
+      return;
+    case RMSNormCudaImpl::kKuiper:
+    default:
+      rmsnorm_kernel_cu_dim_kuiper(input, weight, output, dim, stream);
+      return;
   }
 }
 }  // namespace kernel

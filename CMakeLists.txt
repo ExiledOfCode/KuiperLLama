@@ -116,7 +116,7 @@ aux_source_directory(kuiper/source/sampler DIR_SAMPLE)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 
 function(configure_llama_target target_name)
-  target_link_libraries(${target_name} PUBLIC sentencepiece glog::glog gtest gtest_main pthread cudart armadillo)
+  target_link_libraries(${target_name} PUBLIC sentencepiece glog::glog gtest gtest_main pthread cudart cublas armadillo)
   target_link_directories(${target_name} PUBLIC ${CMAKE_CUDA_COMPILER_LIBRARY_ROOT}/lib64)
   target_include_directories(${target_name} PUBLIC ${glog_INCLUDE_DIR})
   target_include_directories(${target_name} PUBLIC ${PROJECT_SOURCE_DIR}/kuiper/include)
