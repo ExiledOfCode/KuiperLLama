@@ -129,6 +129,7 @@ class Model {
   bool is_quant_model_ = false;
   base::WeightType weight_type_ = base::WeightType::kWeightTypeFp32;
   base::DataType weight_data_type_ = base::DataType::kDataTypeFp32;
+  base::DataType quant_non_param_data_type_ = base::DataType::kDataTypeFp32;
   std::unique_ptr<TransformerConfig> config_;
 
   std::string token_path_;

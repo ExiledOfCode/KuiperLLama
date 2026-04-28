@@ -62,6 +62,15 @@ bool cuda_device_supports_bf16() {
   return prop.major >= 8;
 }
 
+base::DataType quant_non_param_dtype_from_header_reserved(int32_t reserved) {
+  const auto data_type = static_cast<base::DataType>(reserved);
+  if (data_type == base::DataType::kDataTypeBf16 ||
+      data_type == base::DataType::kDataTypeFp32) {
+    return data_type;
+  }
+  return base::DataType::kDataTypeFp32;
+}
+
 }  // namespace
 
 Model::Model(base::TokenizerType tokenizer_type, base::ModelType model_type, std::string token_path,
@@ -210,6 +219,9 @@ base::Status Model::read_model_file() {
       return error::ModelParseError("Unsupported model file header version.");
     }
     weight_type_ = static_cast<base::WeightType>(file_header.weight_type);
+    is_quant_model_ = weight_type_ == base::WeightType::kWeightTypeInt8;
+    quant_non_param_data_type_ =
+        quant_non_param_dtype_from_header_reserved(file_header.reserved);
     if (fread(&config, sizeof(ModelConfig), 1, file) != 1) {
       fclose(file);
       close(fd);
@@ -222,6 +234,7 @@ base::Status Model::read_model_file() {
     std::rewind(file);
     weight_type_ = is_quant_model_ ? base::WeightType::kWeightTypeInt8
                                    : base::WeightType::kWeightTypeFp32;
+    quant_non_param_data_type_ = base::DataType::kDataTypeFp32;
     if (fread(&config, sizeof(ModelConfig), 1, file) != 1) {
       fclose(file);
       close(fd);
@@ -230,17 +243,6 @@ base::Status Model::read_model_file() {
           "file.");
     }
     weight_data_offset = sizeof(ModelConfig);
-  }
-
-  if (weight_type_ == base::WeightType::kWeightTypeInt8 && !is_quant_model_) {
-    fclose(file);
-    close(fd);
-    return error::ModelParseError("The model file is int8 quantized but infer is not in quant mode.");
-  }
-  if (weight_type_ != base::WeightType::kWeightTypeInt8 && is_quant_model_) {
-    fclose(file);
-    close(fd);
-    return error::ModelParseError("The model file is not int8 quantized but infer is in quant mode.");
   }
 
   if (weight_type_ == base::WeightType::kWeightTypeInt8) {

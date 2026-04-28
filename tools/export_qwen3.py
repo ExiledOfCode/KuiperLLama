@@ -5,6 +5,7 @@ Export Qwen3 HuggingFace safetensors weights to KuiperLLama .bin format.
 Usage examples:
   python3 tools/export_qwen3.py models/Qwen3-1.7B/Qwen3-1.7B.bin --hf=models/Qwen3-1.7B
   python3 tools/export_qwen3.py --output models/Qwen3-1.7B/Qwen3-1.7B-bf16.bin --model-dir=models/Qwen3-1.7B --dtype=bf16
+  python3 tools/export_qwen3.py --output models/Qwen3-4B-Thinking-2507/Qwen3-4B-Thinking-2507-int8.bin --model-dir=models/Qwen3-4B-Thinking-2507 --dtype=int8 --max-seq-len=8192 --overwrite
   python3 tools/export_qwen3.py --output models/Qwen3-1.7B/Qwen3-1.7B.bin --model-dir=models/Qwen3-1.7B
 
 Output weight order follows `kuiper/source/model/qwen3.cpp`:
@@ -44,6 +45,8 @@ MODEL_FILE_VERSION = 1
 WEIGHT_TYPE_FP32 = 0
 WEIGHT_TYPE_INT8 = 1
 WEIGHT_TYPE_BF16 = 2
+DATA_TYPE_FP32 = 1
+DATA_TYPE_BF16 = 4
 
 
 def serialize_fp32(file_obj, tensor: torch.Tensor) -> None:
@@ -56,6 +59,32 @@ def serialize_bf16(file_obj, tensor: torch.Tensor) -> None:
     """Write one tensor in bf16 contiguous layout."""
     data = tensor.detach().to(torch.bfloat16).contiguous().view(torch.uint16).cpu().numpy()
     file_obj.write(data.tobytes())
+
+
+def serialize_int8(file_obj, tensor: torch.Tensor) -> None:
+    """Write one tensor in int8 contiguous layout."""
+    data = tensor.detach().to(torch.int8).contiguous().view(-1).cpu().numpy()
+    file_obj.write(data.tobytes())
+
+
+def quantize_q80(tensor: torch.Tensor, group_size: int):
+    """Symmetric Q8_0 group-wise quantization: fp32 ~= int8 * scale."""
+    data = tensor.detach().to(torch.float32).contiguous()
+    if data.numel() % group_size != 0:
+        raise ValueError(
+            f"Tensor with shape {tuple(data.shape)} has {data.numel()} elements, "
+            f"not divisible by group_size={group_size}"
+        )
+
+    original_shape = data.shape
+    grouped = data.view(-1, group_size)
+    wmax = grouped.abs().max(dim=1).values
+    scale = wmax / 127.0
+    scale = torch.where(scale == 0, torch.ones_like(scale), scale)
+    quant = torch.round(grouped / scale[:, None]).clamp(-127, 127).to(torch.int8)
+    dequant = quant.to(torch.float32) * scale[:, None]
+    maxerr = (dequant - grouped).abs().max().item()
+    return quant.view(original_shape), scale, maxerr
 
 
 def read_config(model_dir: Path) -> Dict:
@@ -90,12 +119,25 @@ def build_header(config: Dict, max_seq_len: int) -> bytes:
     )
 
 
-def build_file_header(dtype_name: str) -> bytes:
+def data_type_value(dtype_name: str) -> int:
     if dtype_name == "bf16":
+        return DATA_TYPE_BF16
+    if dtype_name == "fp32":
+        return DATA_TYPE_FP32
+    raise ValueError(f"Unsupported non-parameter dtype: {dtype_name}")
+
+
+def build_file_header(dtype_name: str, int8_non_param_dtype: str = "fp32") -> bytes:
+    if dtype_name == "int8":
+        weight_type = WEIGHT_TYPE_INT8
+        reserved = data_type_value(int8_non_param_dtype)
+    elif dtype_name == "bf16":
         weight_type = WEIGHT_TYPE_BF16
+        reserved = 0
     else:
         weight_type = WEIGHT_TYPE_FP32
-    return struct.pack("IIii", MODEL_FILE_MAGIC, MODEL_FILE_VERSION, weight_type, 0)
+        reserved = 0
+    return struct.pack("IIii", MODEL_FILE_MAGIC, MODEL_FILE_VERSION, weight_type, reserved)
 
 
 def build_weight_order(config: Dict) -> List[str]:
@@ -121,6 +163,21 @@ def build_weight_order(config: Dict) -> List[str]:
     # lm_head is required by Kuiper qwen3 loader; for tied embeddings we reuse embed_tokens.
     names.append("lm_head.weight")
     return names
+
+
+def should_quantize_tensor(name: str) -> bool:
+    if name == "lm_head.weight":
+        return True
+    quantized_suffixes = (
+        ".self_attn.q_proj.weight",
+        ".self_attn.k_proj.weight",
+        ".self_attn.v_proj.weight",
+        ".self_attn.o_proj.weight",
+        ".mlp.gate_proj.weight",
+        ".mlp.down_proj.weight",
+        ".mlp.up_proj.weight",
+    )
+    return any(name.endswith(suffix) for suffix in quantized_suffixes)
 
 
 def load_weight_map(model_dir: Path) -> Dict[str, str]:
@@ -216,6 +273,8 @@ def export_qwen3_bin(
     output_path: Path,
     max_seq_len: int,
     dtype_name: str,
+    group_size: int = 64,
+    int8_non_param_dtype: str = "bf16",
     overwrite: bool = False,
     check_only: bool = False,
 ) -> None:
@@ -252,29 +311,53 @@ def export_qwen3_bin(
     print(f"kv_head_num   : {config['num_key_value_heads']}")
     print(f"intermediate  : {config['intermediate_size']}")
     print(f"weight_dtype  : {dtype_name}")
+    if dtype_name == "int8":
+        print(f"group_size    : {group_size}")
+        print(f"non_param_dtype: {int8_non_param_dtype}")
 
     if check_only:
         print("[check-only] required keys and config are valid.")
         return
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    file_header = build_file_header(dtype_name)
+    file_header = build_file_header(dtype_name, int8_non_param_dtype)
     header = build_header(config, max_seq_len)
-    serializer = serialize_bf16 if dtype_name == "bf16" else serialize_fp32
+    if dtype_name == "bf16":
+        serializer = serialize_bf16
+    elif dtype_name == "int8" and int8_non_param_dtype == "bf16":
+        serializer = serialize_bf16
+    else:
+        serializer = serialize_fp32
 
     with output_path.open("wb") as f:
         f.write(file_header)
         f.write(header)
+        if dtype_name == "int8":
+            f.write(struct.pack("i", group_size))
 
         total = len(order)
+        max_errors = []
         for idx, name in enumerate(order, start=1):
             if name == "lm_head.weight":
                 tensor = resolve_lm_head(reader, "model.embed_tokens.weight", "lm_head.weight")
             else:
                 tensor = reader.get_tensor(name)
-            serializer(f, tensor)
+            if dtype_name == "int8" and should_quantize_tensor(name):
+                quant, scale, maxerr = quantize_q80(tensor, group_size)
+                serialize_int8(f, quant)
+                serialize_fp32(f, scale)
+                max_errors.append((maxerr, name, tuple(tensor.shape)))
+                action = f"quantized maxerr={maxerr:.6g}"
+            else:
+                serializer(f, tensor)
+                action = "stored"
             if idx % 20 == 0 or idx == total:
-                print(f"[{idx:>3}/{total}] {name}")
+                print(f"[{idx:>3}/{total}] {action} {name}")
+
+    if max_errors:
+        max_errors.sort(reverse=True)
+        maxerr, name, shape = max_errors[0]
+        print(f"max Q8_0 group error: {maxerr:.6g} at {name} shape={shape}")
 
     print(f"wrote {output_path}")
 
@@ -318,8 +401,21 @@ def parse_args() -> argparse.Namespace:
         "--dtype",
         type=str,
         default="fp32",
-        choices=("fp32", "bf16"),
+        choices=("fp32", "bf16", "int8"),
         help="Stored weight dtype in output file (default: fp32).",
+    )
+    parser.add_argument(
+        "--group-size",
+        type=int,
+        default=64,
+        help="Q8_0 quantization group size for --dtype=int8 (default: 64).",
+    )
+    parser.add_argument(
+        "--int8-non-param-dtype",
+        type=str,
+        default="bf16",
+        choices=("fp32", "bf16"),
+        help="Storage dtype for Qwen3 int8 non-MatMul tensors: norms and embeddings (default: bf16).",
     )
     parser.add_argument(
         "--overwrite",
@@ -340,6 +436,9 @@ def main() -> int:
     if args.max_seq_len <= 0:
         print("Error: --max-seq-len must be > 0", file=sys.stderr)
         return 2
+    if args.group_size <= 0:
+        print("Error: --group-size must be > 0", file=sys.stderr)
+        return 2
 
     model_dir = args.hf or args.model_dir or DEFAULT_MODEL_DIR
     output_path = args.output or args.filepath or DEFAULT_OUTPUT
@@ -350,6 +449,8 @@ def main() -> int:
             output_path=output_path,
             max_seq_len=args.max_seq_len,
             dtype_name=args.dtype,
+            group_size=args.group_size,
+            int8_non_param_dtype=args.int8_non_param_dtype,
             overwrite=args.overwrite,
             check_only=args.check_only,
         )
