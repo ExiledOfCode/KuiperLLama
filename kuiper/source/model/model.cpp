@@ -219,7 +219,8 @@ base::Status Model::read_model_file() {
       return error::ModelParseError("Unsupported model file header version.");
     }
     weight_type_ = static_cast<base::WeightType>(file_header.weight_type);
-    is_quant_model_ = weight_type_ == base::WeightType::kWeightTypeInt8;
+    is_quant_model_ = weight_type_ == base::WeightType::kWeightTypeInt8 ||
+                      weight_type_ == base::WeightType::kWeightTypeAwqInt4;
     quant_non_param_data_type_ =
         quant_non_param_dtype_from_header_reserved(file_header.reserved);
     if (fread(&config, sizeof(ModelConfig), 1, file) != 1) {
@@ -245,7 +246,8 @@ base::Status Model::read_model_file() {
     weight_data_offset = sizeof(ModelConfig);
   }
 
-  if (weight_type_ == base::WeightType::kWeightTypeInt8) {
+  if (weight_type_ == base::WeightType::kWeightTypeInt8 ||
+      weight_type_ == base::WeightType::kWeightTypeAwqInt4) {
     if (fread(&group_size_, sizeof(int32_t), 1, file) != 1) {
       fclose(file);
       close(fd);
@@ -268,6 +270,9 @@ base::Status Model::read_model_file() {
     weight_data_type_ = base::DataType::kDataTypeFp32;
   } else if (weight_type_ == base::WeightType::kWeightTypeInt8) {
     raw_model_data_ = std::make_shared<RawModelDataInt8>();
+    weight_data_type_ = base::DataType::kDataTypeInt8;
+  } else if (weight_type_ == base::WeightType::kWeightTypeAwqInt4) {
+    raw_model_data_ = std::make_shared<RawModelDataAwqInt4>();
     weight_data_type_ = base::DataType::kDataTypeInt8;
   } else if (weight_type_ == base::WeightType::kWeightTypeBf16) {
     raw_model_data_ = std::make_shared<RawModelDataBf16>();
@@ -294,7 +299,8 @@ base::Status Model::read_model_file() {
     return error::ModelParseError("Failed to map the weight file " + model_path_ + " into memory.");
   }
   if (weight_type_ == base::WeightType::kWeightTypeFp32 ||
-      weight_type_ == base::WeightType::kWeightTypeInt8) {
+      weight_type_ == base::WeightType::kWeightTypeInt8 ||
+      weight_type_ == base::WeightType::kWeightTypeAwqInt4) {
     raw_model_data_->weight_data = static_cast<int8_t*>(raw_model_data_->data) + weight_data_offset;
     weight_data_byte_size_ = raw_model_data_->file_size - weight_data_offset;
   } else {

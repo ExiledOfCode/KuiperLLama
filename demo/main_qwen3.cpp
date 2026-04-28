@@ -33,6 +33,7 @@ struct GenerationResult {
   std::string response;
   int32_t steps = 0;
   bool cancelled = false;
+  std::string finish_reason = "unknown";
 };
 
 struct ServeState {
@@ -403,7 +404,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
   if (emit_trace) {
     model.reset_profile_stats();
   }
-  const int32_t total_steps = prompt_len + effective_max_new_tokens;
+  const int32_t total_steps = prompt_len + effective_max_new_tokens - 1;
   const auto step3_begin = std::chrono::steady_clock::now();
 
   int32_t pos = 0;
@@ -413,6 +414,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
   int32_t same_token_run = 0;
   int32_t generated_token_count = 0;
   bool cancelled = false;
+  std::string finish_reason = "length";
   const auto& prompt_embedding = model.embedding(tokens);
   tensor::Tensor pos_tensor = model.get_buffer(model::ModelBufferType::kInputPos);
 
@@ -421,6 +423,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
   while (pos < total_steps) {
     if (cancel_requested != nullptr && cancel_requested->load()) {
       cancelled = true;
+      finish_reason = "cancelled";
       break;
     }
     pos_tensor.index<int32_t>(0) = pos;
@@ -436,10 +439,12 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
     }
     if (cancel_requested != nullptr && cancel_requested->load()) {
       cancelled = true;
+      finish_reason = "cancelled";
       break;
     }
 
     if (!is_prompt && model.is_sentence_ending(next)) {
+      finish_reason = "eos";
       break;
     }
     if (is_prompt) {
@@ -469,6 +474,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
         same_token_run = 1;
       }
       if (same_token_run >= 24) {
+        finish_reason = "same_token_repeat";
         break;
       }
 
@@ -479,6 +485,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
             tail_text.find("<|endoftext|>") != std::string::npos ||
             tail_text.find("</s>") != std::string::npos ||
             tail_text.find("<|end|>") != std::string::npos) {
+          finish_reason = "stop_marker";
           break;
         }
       }
@@ -494,6 +501,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
           }
         }
         if (repeated) {
+          finish_reason = "window_repeat";
           break;
         }
       }
@@ -555,6 +563,9 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
            {"sampler", "argmax"},
            {"duration_ms", sampling_ms},
            {"generated_token_count", generated_token_count},
+           {"requested_max_new_tokens", requested_max_new_tokens},
+           {"effective_max_new_tokens", effective_max_new_tokens},
+           {"finish_reason", finish_reason},
            {"preview_token_ids", generated_preview_ids},
            {"truncated", response_tokens.size() > generated_preview_ids.size()}},
       emit_trace);
@@ -566,7 +577,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
            {"generated_text_preview", truncate_text(response, kTraceTextPreviewLimit)},
            {"generated_char_count", static_cast<int32_t>(response.size())}},
       emit_trace);
-  return {response, std::min(pos, total_steps), cancelled};
+  return {response, std::min(pos, total_steps), cancelled, finish_reason};
 }
 
 bool init_model(model::Qwen3Model& model) {
@@ -620,8 +631,8 @@ void print_result(const GenerationResult& result, double duration_sec, bool prin
   std::printf("[RESPONSE_START]\n%s\n[RESPONSE_END]\n", result.response.c_str());
   std::fflush(stdout);
   if (print_stats) {
-    std::fprintf(stderr, "[STATS] steps=%d duration=%.6f steps_per_s=%.6f\n", result.steps, duration_sec,
-                 steps_per_s);
+    std::fprintf(stderr, "[STATS] steps=%d duration=%.6f steps_per_s=%.6f finish_reason=%s\n",
+                 result.steps, duration_sec, steps_per_s, result.finish_reason.c_str());
     std::fflush(stderr);
   }
 }
@@ -732,6 +743,7 @@ int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_s
              {"title", "Inference Done"},
              {"duration_seconds", duration},
              {"generated_steps", result.steps},
+             {"finish_reason", result.finish_reason},
              {"state", result.cancelled ? "cancelled" : "completed"}},
         emit_trace);
     if (result.cancelled) {

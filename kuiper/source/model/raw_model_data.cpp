@@ -22,6 +22,10 @@ const void* RawModelDataInt8::weight(size_t offset) const {
   return static_cast<int8_t*>(weight_data) + offset;
 }
 
+const void* RawModelDataAwqInt4::weight(size_t offset) const {
+  return static_cast<uint8_t*>(weight_data) + offset;
+}
+
 void RawModelDataBf16::load_from_bf16(const uint16_t* source, size_t count) {
   source_weights = nullptr;
   converted_weights.resize(count);

@@ -12,6 +12,10 @@ class MatmulLayer : public LayerParam {
   explicit MatmulLayer(base::DeviceType device_type, int32_t dim0, int32_t dim1,
                        bool is_quant_layer = false, bool has_bias = false);
 
+  static std::shared_ptr<MatmulLayer> create_awq_int4(base::DeviceType device_type, int32_t dim0,
+                                                      int32_t dim1,
+                                                      bool has_bias = false);
+
   base::Status check() const override;
 
   base::Status forward() override;

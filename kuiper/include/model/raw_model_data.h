@@ -22,6 +22,10 @@ struct RawModelDataInt8 : RawModelData {
   const void* weight(size_t offset) const override;
 };
 
+struct RawModelDataAwqInt4 : RawModelData {
+  const void* weight(size_t offset) const override;
+};
+
 struct RawModelDataBf16 : RawModelData {
   void load_from_bf16(const uint16_t* source, size_t count);
 

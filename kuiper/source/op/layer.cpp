@@ -160,12 +160,14 @@ size_t Layer::output_size() const { return outputs_.size(); }
 
 LayerParam::LayerParam(base::DeviceType device_type, LayerType layer_type, bool is_quant_layer,
                        std::string layer_name)
-    : Layer(device_type, layer_type, std::move(layer_name)), is_quant_layer_(is_quant_layer) {}
+    : Layer(device_type, layer_type, std::move(layer_name)),
+      is_quant_layer_(is_quant_layer),
+      quant_type_(is_quant_layer ? QuantType::kInt8Sym : QuantType::kNone) {}
 
 base::Status LayerParam::set_weight(int32_t idx, const tensor::Tensor& weight) {
   CHECK_GE(idx, 0);
   CHECK_LT(idx, weights_.size());
-  if (is_quant_layer_) {
+  if (quant_type_ == QuantType::kInt8Sym || quant_type_ == QuantType::kAwqInt4) {
     CHECK(weight.data_type() == base::DataType::kDataTypeInt8);
   } else {
     CHECK(weight.data_type() == base::DataType::kDataTypeFp32 ||
@@ -190,6 +192,12 @@ tensor::Tensor& LayerParam::get_scales() { return scales_; }
 
 const tensor::Tensor& LayerParam::get_scales() const { return scales_; }
 
+bool LayerParam::has_zeros() const { return !zeros_.is_empty(); }
+
+tensor::Tensor& LayerParam::get_zeros() { return zeros_; }
+
+const tensor::Tensor& LayerParam::get_zeros() const { return zeros_; }
+
 void LayerParam::to_cuda() {
   Layer::to_cuda();
   for (auto& weight : weights_) {
@@ -197,6 +205,9 @@ void LayerParam::to_cuda() {
   }
   if (!scales_.is_empty()) {
     scales_.to_cuda(cuda_config_ ? cuda_config_->stream : nullptr);
+  }
+  if (!zeros_.is_empty()) {
+    zeros_.to_cuda(cuda_config_ ? cuda_config_->stream : nullptr);
   }
 }
 
@@ -207,35 +218,59 @@ base::Status LayerParam::set_weight(int32_t idx, const std::vector<int32_t>& dim
   CHECK_LT(idx, weights_.size());
   CHECK_NE(weight_ptr, nullptr);
 
+  size_t logical_size = std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1),
+                                        std::multiplies<>());
   const base::DataType target_type =
-      is_quant_layer_ ? base::DataType::kDataTypeInt8 : data_type;
-  size_t size = std::accumulate(dims.begin(), dims.end(), base::DataTypeSize(target_type),
-                                std::multiplies<>());
+      is_quantized() ? base::DataType::kDataTypeInt8 : data_type;
+  size_t size = logical_size * base::DataTypeSize(target_type);
+  if (quant_type_ == QuantType::kAwqInt4) {
+    size = (logical_size + 1) / 2;
+  }
   std::shared_ptr<base::Buffer> buffer =
       std::make_shared<base::Buffer>(size, nullptr, const_cast<void*>(weight_ptr), true);
   if (device_type != base::DeviceType::kDeviceUnknown) {
     buffer->set_device_type(device_type);
   }
 
-  if (!is_quant_layer_) {
+  if (!is_quantized()) {
     tensor::Tensor weight(target_type, dims);
     weight.set_device_type(device_type);
     CHECK(weight.assign(buffer));
     weights_.at(idx) = weight;
-  } else {
-    // is quant layer
+  } else if (quant_type_ == QuantType::kInt8Sym) {
     tensor::Tensor weight(base::DataType::kDataTypeInt8, dims);
     weight.set_device_type(device_type);
     CHECK(weight.assign(buffer));
     weights_.at(idx) = weight;
 
-    const int32_t weight_size = static_cast<int32_t>(weight.size());
+    const int32_t weight_size = static_cast<int32_t>(logical_size);
     CHECK(weight_size % group_size_ == 0);
 
     int32_t scale_nums = weight_size / group_size_;
     scales_ = tensor::Tensor{base::DataType::kDataTypeFp32, scale_nums, false, nullptr,
                              reinterpret_cast<float*>((int8_t*)weight_ptr + weight_size)};
     scales_.set_device_type(device_type);
+  } else if (quant_type_ == QuantType::kAwqInt4) {
+    CHECK_EQ(logical_size % static_cast<size_t>(group_size_), 0)
+        << "AWQ int4 weights require numel to be divisible by group_size.";
+    const size_t packed_size = (logical_size + 1) / 2;
+    tensor::Tensor weight(base::DataType::kDataTypeInt8, static_cast<int32_t>(packed_size));
+    weight.set_device_type(device_type);
+    CHECK(weight.assign(buffer));
+    weights_.at(idx) = weight;
+
+    const int32_t scale_nums = static_cast<int32_t>(logical_size / group_size_);
+    const auto* scales_ptr = reinterpret_cast<const float*>(
+        static_cast<const uint8_t*>(weight_ptr) + packed_size);
+    scales_ = tensor::Tensor{base::DataType::kDataTypeFp32, scale_nums, false, nullptr,
+                             const_cast<float*>(scales_ptr)};
+    scales_.set_device_type(device_type);
+
+    const auto* zeros_ptr =
+        reinterpret_cast<const int8_t*>(scales_ptr + scale_nums);
+    zeros_ = tensor::Tensor{base::DataType::kDataTypeInt8, scale_nums, false, nullptr,
+                            const_cast<int8_t*>(zeros_ptr)};
+    zeros_.set_device_type(device_type);
   }
 
   return base::error::Success();
@@ -253,6 +288,15 @@ int32_t LayerParam::get_scale_num() const {
   return static_cast<int32_t>(scales_.size());
 }
 
+void LayerParam::set_quant_type(QuantType quant_type) {
+  quant_type_ = quant_type;
+  is_quant_layer_ = quant_type != QuantType::kNone;
+}
+
+QuantType LayerParam::quant_type() const { return quant_type_; }
+
+bool LayerParam::is_quantized() const { return quant_type_ != QuantType::kNone; }
+
 void LayerParam::reset_weight_size(size_t size) { weights_.resize(size); }
 
 size_t LayerParam::weight_size() const { return weights_.size(); }
@@ -266,6 +310,9 @@ size_t LayerParam::weight_byte_size() const {
   }
   if (!scales_.is_empty()) {
     total += scales_.byte_size();
+  }
+  if (!zeros_.is_empty()) {
+    total += zeros_.byte_size();
   }
   return total;
 }

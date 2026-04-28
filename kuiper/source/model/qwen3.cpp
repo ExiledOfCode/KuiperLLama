@@ -377,6 +377,19 @@ void Qwen3Model::create_param_quant_layers() {
     }
     return bytes;
   };
+  auto create_quant_matmul = [&](int32_t out_dim, int32_t in_dim) {
+    std::shared_ptr<op::MatmulLayer> layer;
+    if (weight_type_ == base::WeightType::kWeightTypeAwqInt4) {
+      layer = op::MatmulLayer::create_awq_int4(device_type_, out_dim, in_dim);
+    } else {
+      layer = std::make_shared<op::MatmulLayer>(device_type_, out_dim, in_dim, true);
+    }
+    layer->set_group_size(group_size_);
+    layer->set_weight(0, {out_dim, in_dim}, this->raw_model_data_->weight(pos),
+                      cpu_device_type);
+    pos += layer->weight_byte_size();
+    return layer;
+  };
 
   // rmsnorm attention, ffn, final
   for (int32_t i = 0; i < 2 * config_->layer_num_ + 1; ++i) {
@@ -399,11 +412,8 @@ void Qwen3Model::create_param_quant_layers() {
 
   // query
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wq = std::make_shared<op::MatmulLayer>(device_type_, dim, hidden_dim, true);
-    wq->set_group_size(group_size_);
-    wq->set_weight(0, {dim, hidden_dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    auto wq = create_quant_matmul(dim, hidden_dim);
     qwen_layers_->wq_layers_.push_back(wq);
-    pos += static_cast<size_t>(hidden_dim) * dim + wq->get_scale_num() * sizeof(float);
   }
 
   // query norm
@@ -418,11 +428,8 @@ void Qwen3Model::create_param_quant_layers() {
 
   // key
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wk = std::make_shared<op::MatmulLayer>(device_type_, kv_dim, hidden_dim, true);
-    wk->set_group_size(group_size_);
-    wk->set_weight(0, {kv_dim, hidden_dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    auto wk = create_quant_matmul(kv_dim, hidden_dim);
     qwen_layers_->wk_layers_.push_back(wk);
-    pos += static_cast<size_t>(hidden_dim) * kv_dim + wk->get_scale_num() * sizeof(float);
   }
 
   // key norm
@@ -437,57 +444,35 @@ void Qwen3Model::create_param_quant_layers() {
 
   // value
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wv = std::make_shared<op::MatmulLayer>(device_type_, kv_dim, hidden_dim, true);
-    wv->set_group_size(group_size_);
-    wv->set_weight(0, {kv_dim, hidden_dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    auto wv = create_quant_matmul(kv_dim, hidden_dim);
     qwen_layers_->wv_layers_.push_back(wv);
-    pos += static_cast<size_t>(hidden_dim) * kv_dim + wv->get_scale_num() * sizeof(float);
   }
 
   // output
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto wo = std::make_shared<op::MatmulLayer>(device_type_, hidden_dim, dim, true);
-    wo->set_group_size(group_size_);
-    wo->set_weight(0, {hidden_dim, dim}, this->raw_model_data_->weight(pos), cpu_device_type);
+    auto wo = create_quant_matmul(hidden_dim, dim);
     qwen_layers_->wo_layers_.push_back(wo);
-    pos += static_cast<size_t>(dim) * hidden_dim + wo->get_scale_num() * sizeof(float);
   }
 
   // w1 layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto w1 = std::make_shared<op::MatmulLayer>(device_type_, immediate_dim, hidden_dim, true);
-    w1->set_group_size(group_size_);
-    w1->set_weight(0, {immediate_dim, hidden_dim}, this->raw_model_data_->weight(pos),
-                   cpu_device_type);
+    auto w1 = create_quant_matmul(immediate_dim, hidden_dim);
     qwen_layers_->w1_layers_.push_back(w1);
-    pos += static_cast<size_t>(hidden_dim) * immediate_dim + w1->get_scale_num() * sizeof(float);
   }
 
   // w2 layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto w2 = std::make_shared<op::MatmulLayer>(device_type_, hidden_dim, immediate_dim, true);
-    w2->set_group_size(group_size_);
-    w2->set_weight(0, {hidden_dim, immediate_dim}, this->raw_model_data_->weight(pos),
-                   cpu_device_type);
+    auto w2 = create_quant_matmul(hidden_dim, immediate_dim);
     qwen_layers_->w2_layers_.push_back(w2);
-    pos += static_cast<size_t>(immediate_dim) * hidden_dim + w2->get_scale_num() * sizeof(float);
   }
 
   // w3 layers
   for (int32_t i = 0; i < config_->layer_num_; ++i) {
-    auto w3 = std::make_shared<op::MatmulLayer>(device_type_, immediate_dim, hidden_dim, true);
-    w3->set_group_size(group_size_);
-    w3->set_weight(0, {immediate_dim, hidden_dim}, this->raw_model_data_->weight(pos),
-                   cpu_device_type);
+    auto w3 = create_quant_matmul(immediate_dim, hidden_dim);
     qwen_layers_->w3_layers_.push_back(w3);
-    pos += static_cast<size_t>(hidden_dim) * immediate_dim + w3->get_scale_num() * sizeof(float);
   }
 
-  auto lm_head =
-      std::make_shared<op::MatmulLayer>(device_type_, config_->vocab_size_, hidden_dim, true);
-  lm_head->set_group_size(group_size_);
-  lm_head->set_weight(0, {config_->vocab_size_, hidden_dim}, this->raw_model_data_->weight(pos),
-                      cpu_device_type);
+  auto lm_head = create_quant_matmul(config_->vocab_size_, hidden_dim);
   qwen_layers_->cls_layer_ = lm_head;
 }
 

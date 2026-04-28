@@ -51,6 +51,7 @@ enum class WeightType : int32_t {
   kWeightTypeFp32 = 0,
   kWeightTypeInt8 = 1,
   kWeightTypeBf16 = 2,
+  kWeightTypeAwqInt4 = 3,
 };
 
 enum class ModelType : uint8_t {

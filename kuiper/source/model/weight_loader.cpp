@@ -32,6 +32,9 @@ void collect_layer_tensors(const std::shared_ptr<op::Layer>& layer,
   if (param_layer->has_scales()) {
     append_tensor_if_valid(tensors, param_layer->get_scales());
   }
+  if (param_layer->has_zeros()) {
+    append_tensor_if_valid(tensors, param_layer->get_zeros());
+  }
 
   auto matmul_layer = std::dynamic_pointer_cast<op::MatmulLayer>(layer);
   if (!matmul_layer || !matmul_layer->has_bias()) {

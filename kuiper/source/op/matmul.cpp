@@ -47,6 +47,14 @@ MatmulLayer::MatmulLayer(base::DeviceType device_type, int32_t dim0, int32_t dim
   }
 }
 
+std::shared_ptr<MatmulLayer> MatmulLayer::create_awq_int4(base::DeviceType device_type,
+                                                          int32_t dim0, int32_t dim1,
+                                                          bool has_bias) {
+  auto layer = std::make_shared<MatmulLayer>(device_type, dim0, dim1, false, has_bias);
+  layer->set_quant_type(QuantType::kAwqInt4);
+  return layer;
+}
+
 base::Status MatmulLayer::check() const {
   auto status = check_tensor_with_dim(get_input(0), device_type_, data_type_, dim1_);
   if (!status) {
@@ -54,26 +62,43 @@ base::Status MatmulLayer::check() const {
     return status;
   }
 
-  if (!is_quant_layer_) {
+  if (quant_type_ == QuantType::kNone) {
     status = check_weight_tensor(get_weight(0), device_type_, dim0_, dim1_);
     if (!status) {
       LOG(ERROR) << "The weight tensor error in the matmul layer.";
       return status;
     }
-  } else {
+  } else if (quant_type_ == QuantType::kInt8Sym) {
     status = check_tensor_with_dim(get_weight(0), device_type_, base::DataType::kDataTypeInt8,
                                    dim0_, dim1_);
     if (!status) {
       LOG(ERROR) << "The weight tensor error in the matmul layer.";
       return status;
     }
+  } else if (quant_type_ == QuantType::kAwqInt4) {
+    const int32_t packed_size = (dim0_ * dim1_ + 1) / 2;
+    status = check_tensor_with_dim(get_weight(0), device_type_, base::DataType::kDataTypeInt8,
+                                   packed_size);
+    if (!status) {
+      LOG(ERROR) << "The AWQ int4 packed weight tensor error in the matmul layer.";
+      return status;
+    }
   }
 
-  if (is_quant_layer_) {
-    status = check_tensor_with_dim(scales_, device_type_, base::DataType::kDataTypeFp32, scales_.size());
+  if (is_quantized()) {
+    status = check_tensor_with_dim(scales_, device_type_, base::DataType::kDataTypeFp32,
+                                   static_cast<int32_t>(scales_.size()));
     if (!status) {
       LOG(ERROR) << "The scale tensor error in the matmul layer.";
       return status;
+    }
+    if (quant_type_ == QuantType::kAwqInt4) {
+      status = check_tensor_with_dim(zeros_, device_type_, base::DataType::kDataTypeInt8,
+                                     static_cast<int32_t>(zeros_.size()));
+      if (!status) {
+        LOG(ERROR) << "The zero tensor error in the matmul layer.";
+        return status;
+      }
     }
   }
 
@@ -93,10 +118,14 @@ base::Status MatmulLayer::forward() {
   if (device_type_ == base::DeviceType::kDeviceCUDA) {
     CHECK(cuda_config_ != nullptr);
   }
-  if (is_quant_layer_) {
+  if (quant_type_ == QuantType::kInt8Sym) {
     kernel::get_matmul_kernel_quant8(device_type_)(get_input(0), get_weight(0), get_output(0),
                                                    group_size_, scales_,
                                                    cuda_config_ ? cuda_config_.get() : nullptr);
+  } else if (quant_type_ == QuantType::kAwqInt4) {
+    kernel::get_matmul_kernel_awq_int4(device_type_)(
+        get_input(0), get_weight(0), get_output(0), group_size_, scales_, zeros_,
+        cuda_config_ ? cuda_config_.get() : nullptr);
   } else {
     kernel::get_matmul_kernel(device_type_)(get_input(0), get_weight(0), get_output(0), 1.f,
                                             cuda_config_ ? cuda_config_.get() : nullptr);

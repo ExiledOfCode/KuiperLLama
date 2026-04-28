@@ -22,6 +22,12 @@ enum class LayerType : uint8_t {
   kLayerSwiGLU = 10,
 };
 
+enum class QuantType : uint8_t {
+  kNone = 0,
+  kInt8Sym = 1,
+  kAwqInt4 = 2,
+};
+
 class BaseLayer {
  public:
   explicit BaseLayer(base::DeviceType device_type, LayerType layer_type, base::DataType data_type,
@@ -176,6 +182,12 @@ class LayerParam : public Layer {
 
   const tensor::Tensor& get_scales() const;
 
+  bool has_zeros() const;
+
+  tensor::Tensor& get_zeros();
+
+  const tensor::Tensor& get_zeros() const;
+
   void to_cuda() override;
 
   base::Status set_weight(int32_t idx, const tensor::Tensor& weight) override;
@@ -190,10 +202,18 @@ class LayerParam : public Layer {
 
   int32_t get_scale_num() const;
 
+  void set_quant_type(QuantType quant_type);
+
+  QuantType quant_type() const;
+
+  bool is_quantized() const;
+
  protected:
   int32_t group_size_ = 0;
   bool is_quant_layer_ = false;
+  QuantType quant_type_ = QuantType::kNone;
   tensor::Tensor scales_;
+  tensor::Tensor zeros_;
   std::vector<tensor::Tensor> weights_;
 };
 }  // namespace op
