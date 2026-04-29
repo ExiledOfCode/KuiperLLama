@@ -1,3 +1,5 @@
+// 文件说明：算子层基类声明，统一输入输出张量、权重参数和执行检查接口。
+
 #ifndef KUIPER_INCLUDE_OP_LAYER_H_
 #define KUIPER_INCLUDE_OP_LAYER_H_
 #include <base/cuda_config.h>
@@ -28,6 +30,9 @@ enum class QuantType : uint8_t {
   kAwqInt4 = 2,
 };
 
+// BaseLayer 定义算子统一接口。
+// 多个 forward 重载用于不同输入个数的算子，具体 Layer 会先把参数写入 inputs_/outputs_，
+// 再调用无参 forward() 分发到 CPU/CUDA kernel。
 class BaseLayer {
  public:
   explicit BaseLayer(base::DeviceType device_type, LayerType layer_type, base::DataType data_type,
@@ -97,6 +102,7 @@ class BaseLayer {
   base::DeviceType device_type_ = base::DeviceType::kDeviceUnknown;
 };
 
+// 无参数算子基类，负责输入输出 Tensor 管理、基础维度检查和 CUDA stream 绑定。
 class Layer : public BaseLayer {
  public:
   explicit Layer(base::DeviceType device_type, LayerType layer_type, std::string layer_name = "");
@@ -161,6 +167,8 @@ class Layer : public BaseLayer {
   std::shared_ptr<kernel::CudaConfig> cuda_config_;
 };
 
+// 有参数算子基类，额外管理 weights/scales/zeros。
+// 量化权重中 scales/zeros 与 weights 的实际内存可能来自同一段 mmap payload 的不同偏移。
 class LayerParam : public Layer {
  public:
   explicit LayerParam(base::DeviceType device_type, LayerType layer_type,

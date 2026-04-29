@@ -1,3 +1,5 @@
+// 文件说明：Layer 基类实现，管理输入输出张量、权重张量和基础校验逻辑。
+
 #include "op/layer.h"
 #include <base/cuda_config.h>
 #include <glog/logging.h>
@@ -50,6 +52,7 @@ base::Status Layer::forward() { return base::error::FunctionNotImplement(""); }
 
 base::Status Layer::check_tensor(const tensor::Tensor& tensor, base::DeviceType device_type,
                                  base::DataType data_type) const {
+  // 算子执行前最基本的约束：非空、设备一致、数据类型一致。
   if (tensor.is_empty()) {
     return base::error::InvalidArgument("The tensor parameter is empty.");
   }
@@ -65,6 +68,7 @@ base::Status Layer::check_tensor(const tensor::Tensor& tensor, base::DeviceType 
 base::Status Layer::check_tensor_with_dim(const tensor::Tensor& tensor,
                                           base::DeviceType device_type, base::DataType data_type,
                                           ...) const {
+  // 可变参数依次传入期望维度，例如 check_tensor_with_dim(x, CUDA, FP32, hidden_dim)。
   std::va_list args;
   if (tensor.is_empty()) {
     return base::error::InvalidArgument("The tensor parameter is empty.");
@@ -133,6 +137,7 @@ void Layer::reset_input_size(size_t size) { inputs_.resize(size); }
 void Layer::reset_output_size(size_t size) { outputs_.resize(size); }
 
 void Layer::to_cuda() {
+  // 非参数层只迁移已绑定的输入/输出缓存；参数层会在 LayerParam::to_cuda 中继续迁移权重。
   for (auto& input : inputs_) {
     if (!input.is_empty()) {
       input.to_cuda(cuda_config_ ? cuda_config_->stream : nullptr);
@@ -167,6 +172,7 @@ LayerParam::LayerParam(base::DeviceType device_type, LayerType layer_type, bool 
 base::Status LayerParam::set_weight(int32_t idx, const tensor::Tensor& weight) {
   CHECK_GE(idx, 0);
   CHECK_LT(idx, weights_.size());
+  // 量化层主权重必须是 int8；AWQ int4 也以 int8 buffer 保存 packed bytes。
   if (quant_type_ == QuantType::kInt8Sym || quant_type_ == QuantType::kAwqInt4) {
     CHECK(weight.data_type() == base::DataType::kDataTypeInt8);
   } else {
@@ -200,6 +206,7 @@ const tensor::Tensor& LayerParam::get_zeros() const { return zeros_; }
 
 void LayerParam::to_cuda() {
   Layer::to_cuda();
+  // scales/zeros 是量化计算必需的辅助参数，和 weights 一起迁移到 CUDA。
   for (auto& weight : weights_) {
     weight.to_cuda(cuda_config_ ? cuda_config_->stream : nullptr);
   }
@@ -220,6 +227,7 @@ base::Status LayerParam::set_weight(int32_t idx, const std::vector<int32_t>& dim
 
   size_t logical_size = std::accumulate(dims.begin(), dims.end(), static_cast<size_t>(1),
                                         std::multiplies<>());
+  // logical_size 是未量化逻辑元素数；AWQ int4 的实际 packed byte 数只有一半。
   const base::DataType target_type =
       is_quantized() ? base::DataType::kDataTypeInt8 : data_type;
   size_t size = logical_size * base::DataTypeSize(target_type);
@@ -233,11 +241,13 @@ base::Status LayerParam::set_weight(int32_t idx, const std::vector<int32_t>& dim
   }
 
   if (!is_quantized()) {
+    // 全精度权重直接把 mmap payload 作为外部 Buffer，避免加载阶段拷贝。
     tensor::Tensor weight(target_type, dims);
     weight.set_device_type(device_type);
     CHECK(weight.assign(buffer));
     weights_.at(idx) = weight;
   } else if (quant_type_ == QuantType::kInt8Sym) {
+    // INT8 对称量化布局：weight[int8] 后紧跟 scales[float]。
     tensor::Tensor weight(base::DataType::kDataTypeInt8, dims);
     weight.set_device_type(device_type);
     CHECK(weight.assign(buffer));
@@ -251,6 +261,7 @@ base::Status LayerParam::set_weight(int32_t idx, const std::vector<int32_t>& dim
                              reinterpret_cast<float*>((int8_t*)weight_ptr + weight_size)};
     scales_.set_device_type(device_type);
   } else if (quant_type_ == QuantType::kAwqInt4) {
+    // AWQ INT4 布局：packed_weight[uint8] + scales[float] + zeros[int8]。
     CHECK_EQ(logical_size % static_cast<size_t>(group_size_), 0)
         << "AWQ int4 weights require numel to be divisible by group_size.";
     const size_t packed_size = (logical_size + 1) / 2;
@@ -302,6 +313,7 @@ void LayerParam::reset_weight_size(size_t size) { weights_.resize(size); }
 size_t LayerParam::weight_size() const { return weights_.size(); }
 
 size_t LayerParam::weight_byte_size() const {
+  // 统计真实 buffer 字节数，供加载进度和批量上传估算使用。
   size_t total = 0;
   for (const auto& weight : weights_) {
     if (!weight.is_empty()) {

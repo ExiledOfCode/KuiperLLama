@@ -1,3 +1,5 @@
+// 文件说明：SmolLM 模型适配声明，支持轻量模型的权重加载和推理流程。
+
 #ifndef KUIPER_INCLUDE_MODEL_SMOLLM_H_
 #define KUIPER_INCLUDE_MODEL_SMOLLM_H_
 

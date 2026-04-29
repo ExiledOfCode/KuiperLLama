@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""文件说明：Qwen2 家族通用导出脚本，统一配置读取、权重遍历和输出写入。"""
+
 from __future__ import annotations
 
 import argparse

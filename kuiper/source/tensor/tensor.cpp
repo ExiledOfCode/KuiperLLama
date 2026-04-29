@@ -1,3 +1,5 @@
+// 文件说明：Tensor 实现，管理形状、buffer 分配、设备迁移、reshape 和 clone。
+
 #include "tensor/tensor.h"
 #include <cuda_device_runtime_api.h>
 #include <cuda_runtime.h>
@@ -10,6 +12,7 @@ static size_t reduce_dimension(T begin, T end, Tp init) {
   if (begin >= end) {
     return 0;
   }
+  // Tensor 内部统一用元素个数 size_ 表示逻辑容量，byte_size() 再乘 data type 大小。
   size_t size = std::accumulate(begin, end, init, std::multiplies<>());
   return size;
 }
@@ -110,6 +113,7 @@ void Tensor::to_cuda(cudaStream_t stream) {
   if (device_type == base::DeviceType::kDeviceUnknown) {
     LOG(ERROR) << "The device type of the tensor is unknown.";
   } else if (device_type == base::DeviceType::kDeviceCPU) {
+    // 迁移会新建 CUDA Buffer 并替换当前句柄；原 CPU Buffer 由 shared_ptr 生命周期释放。
     size_t byte_size = this->byte_size();
     auto cu_alloc = base::CUDADeviceAllocatorFactory::get_instance();
     auto cu_buffer = std::make_shared<base::Buffer>(byte_size, cu_alloc);
@@ -128,6 +132,7 @@ void Tensor::to_cpu() {
   if (device_type == base::DeviceType::kDeviceUnknown) {
     LOG(ERROR) << "The device type of the tensor is unknown.";
   } else if (device_type == base::DeviceType::kDeviceCUDA) {
+    // 与 to_cuda 对称：拷贝到新的 CPU Buffer，再把 Tensor 重新绑定到主机内存。
     size_t byte_size = this->byte_size();
     auto cpu_alloc = base::CPUDeviceAllocatorFactory::get_instance();
     auto cpu_buffer = std::make_shared<base::Buffer>(byte_size, cpu_alloc);
@@ -160,7 +165,7 @@ bool Tensor::assign(std::shared_ptr<base::Buffer> buffer) {
     return false;
   }
   if (buffer_) {
-    // Rebinding a tensor from CPU to CUDA (or back) is a valid transition during load/move.
+    // 允许重新绑定：权重批量上传会把 mmap 视图换成 CUDA 显存视图，KV cache 也会创建 slot 视图。
   }
 
   size_t byte_size = this->byte_size();
@@ -187,6 +192,7 @@ bool Tensor::allocate(std::shared_ptr<base::DeviceAllocator> allocator, bool nee
 
   if (buffer_ && byte_size <= buffer_->byte_size()) {
     if (!need_realloc) {
+      // 现有 buffer 容量足够时直接复用，避免 request/token 循环中频繁申请内存。
       return true;
     }
   }
@@ -227,6 +233,7 @@ void Tensor::reshape(const std::vector<int32_t>& dims) {
   }
 
   if (size > size_) {
+    // reshape 只在容量不足时重新分配；容量足够时复用原 buffer，避免频繁申请显存。
     auto new_buffer = std::make_shared<base::Buffer>(size * base::DataTypeSize(this->data_type_),
                                                      buffer_->allocator());
     CHECK(new_buffer->allocate());
@@ -240,6 +247,7 @@ void Tensor::reshape(const std::vector<int32_t>& dims) {
 std::shared_ptr<base::Buffer> Tensor::get_buffer() const { return buffer_; }
 
 Tensor Tensor::clone() const {
+  // 默认拷贝只共享 Buffer；clone 显式申请新 Buffer 并复制内容，实现深拷贝。
   Tensor new_tensor = *this;
   size_t byte_size = this->byte_size();
 
@@ -254,6 +262,7 @@ size_t Tensor::byte_size() const { return this->size() * DataTypeSize(data_type_
 std::vector<size_t> Tensor::strides() const {
   std::vector<size_t> strides;
   if (!dims_.empty()) {
+    // 使用连续 row-major 布局：最后一维 stride 为 1。
     for (int32_t i = 0; i < dims_.size() - 1; ++i) {
       size_t stride = reduce_dimension(dims_.begin() + i + 1, dims_.end(), 1);
       strides.push_back(stride);
@@ -270,6 +279,7 @@ bool Tensor::is_empty() const {
 void Tensor::init_buffer(std::shared_ptr<base::DeviceAllocator> alloc, base::DataType data_type,
                          bool need_alloc, void* ptr) {
   if (!alloc && !need_alloc) {
+    // 无 allocator 且传入 ptr 时创建外部视图，Tensor 不负责释放底层内存。
     std::shared_ptr<base::Buffer> buffer =
         std::make_shared<base::Buffer>(data_type_size(data_type) * size_, nullptr, ptr, true);
     this->buffer_ = buffer;

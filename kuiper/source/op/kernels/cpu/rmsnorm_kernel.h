@@ -1,3 +1,5 @@
+// 文件说明：RMSNorm kernel 实现，对隐藏向量执行均方根归一化。
+
 #ifndef LLAMA_INFER_RMSNORM_KERNEL_H
 #define LLAMA_INFER_RMSNORM_KERNEL_H
 #include "tensor/tensor.h"

@@ -1,3 +1,5 @@
+"""文件说明：Qwen3 导出配置模块，解析模型结构、量化参数和输出路径。"""
+
 """
 Qwen3 Model Configuration
 Author: Bound

@@ -1,3 +1,5 @@
+// 文件说明：Softmax kernel 实现，提供注意力分数归一化能力。
+
 #include "softmax_kernel.h"
 #include "../kernels_interface.h"
 namespace kernel {

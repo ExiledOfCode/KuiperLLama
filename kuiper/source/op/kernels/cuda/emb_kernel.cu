@@ -1,3 +1,5 @@
+// 文件说明：Embedding kernel 实现，按 token 索引拷贝词嵌入向量。
+
 #include "emb_kernel.cuh"
 #include <cuda_bf16.h>
 namespace kernel {

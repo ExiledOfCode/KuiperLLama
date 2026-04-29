@@ -1,3 +1,5 @@
+// 文件说明：Unicode 工具声明，为 tokenizer 的 UTF-8/Unicode 处理提供辅助能力。
+
 #pragma once
 
 #include <cstdint>

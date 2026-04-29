@@ -1,3 +1,5 @@
+"""文件说明：Qwen2 导出工具模型结构定义，适配 Qwen2 的权重命名和布局。"""
+
 import math
 import struct
 import inspect

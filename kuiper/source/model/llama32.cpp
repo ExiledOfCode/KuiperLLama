@@ -1,3 +1,5 @@
+// 文件说明：Llama3.2 模型实现，适配 3.2 系列参数并执行端到端推理。
+
 #include "model/llama32.h"
 
 namespace model {

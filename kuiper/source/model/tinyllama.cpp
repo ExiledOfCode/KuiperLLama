@@ -1,3 +1,5 @@
+// 文件说明：TinyLlama 模型实现，覆盖 TinyLlama 权重布局和逐 token 推理。
+
 #include "model/tinyllama.h"
 
 namespace model {

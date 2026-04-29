@@ -1,3 +1,5 @@
+// 文件说明：LLaMA 基础 demo 入口，演示模型加载、提示词编码和逐 token 生成。
+
 #include <atomic>
 #include <algorithm>
 #include <chrono>

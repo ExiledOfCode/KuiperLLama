@@ -1,3 +1,5 @@
+# 文件说明：示例程序构建脚本，生成不同模型家族的推理 demo 可执行文件。
+
 function(ensure_re2_target)
     # Some distro packages (e.g. libre2-dev) do not ship re2Config.cmake.
     # Prefer CMake package, then fallback to pkg-config.

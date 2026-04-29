@@ -1,3 +1,5 @@
+// 文件说明：Qwen2 demo 入口，串联模型加载、上下文输入和采样输出。
+
 #include <atomic>
 #include <algorithm>
 #include <cctype>

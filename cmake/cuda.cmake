@@ -1,3 +1,5 @@
+# 文件说明：CUDA 工具链配置，探测架构能力并组织 NVCC 编译参数。
+
 if (MSVC)
     # Setting this to true brakes Visual Studio builds.
     set(CUDA_ATTACH_VS_BUILD_RULE_TO_CUDA_FILE OFF CACHE BOOL "CUDA_ATTACH_VS_BUILD_RULE_TO_CUDA_FILE")

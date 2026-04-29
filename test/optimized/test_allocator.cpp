@@ -1,3 +1,5 @@
+// 文件说明：单元测试文件，验证 test_allocator 相关模块的正确性。
+
 //
 // Created by fss on 9/19/24.
 //

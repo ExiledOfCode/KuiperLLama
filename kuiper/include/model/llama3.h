@@ -1,3 +1,5 @@
+// 文件说明：Llama3 模型适配声明，定义该架构的层组织、权重读取和前向接口。
+
 #ifndef KUIPER_INCLUDE_MODEL_LLAMA_H_
 #define KUIPER_INCLUDE_MODEL_LLAMA_H_
 #include <base/cuda_config.h>

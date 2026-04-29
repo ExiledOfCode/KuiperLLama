@@ -1,3 +1,5 @@
+# 文件说明：测试构建脚本，组织张量、算子、CUDA 和模型加载相关单元测试。
+
 include(../cmake/cuda.cmake)
 find_package(GTest REQUIRED)
 find_package(glog REQUIRED)

@@ -1,3 +1,5 @@
+// 文件说明：矩阵乘算子实现，根据权重类型和设备分发到对应 kernel。
+
 #include "op/matmul.h"
 #include <cstdint>
 #include <cstring>
@@ -8,6 +10,7 @@ namespace {
 
 base::Status check_weight_tensor(const tensor::Tensor& tensor, base::DeviceType device_type,
                                  int32_t dim0, int32_t dim1) {
+  // 非量化 matmul 接受 FP32/BF16 权重，形状固定为 [out_dim, in_dim]。
   if (tensor.is_empty()) {
     return base::error::InvalidArgument("The tensor parameter is empty.");
   }
@@ -25,6 +28,7 @@ base::Status check_weight_tensor(const tensor::Tensor& tensor, base::DeviceType 
 }
 
 float bf16_to_fp32(uint16_t value) {
+  // BF16 的高 16 位对应 FP32 的符号/指数/高位尾数，低 16 位补零即可得到近似 FP32。
   uint32_t bits = static_cast<uint32_t>(value) << 16U;
   float result = 0.f;
   std::memcpy(&result, &bits, sizeof(result));
@@ -50,12 +54,14 @@ MatmulLayer::MatmulLayer(base::DeviceType device_type, int32_t dim0, int32_t dim
 std::shared_ptr<MatmulLayer> MatmulLayer::create_awq_int4(base::DeviceType device_type,
                                                           int32_t dim0, int32_t dim1,
                                                           bool has_bias) {
+  // AWQ INT4 仍复用 MatmulLayer，只切换 quant_type 以影响权重解析、check 和 kernel 分发。
   auto layer = std::make_shared<MatmulLayer>(device_type, dim0, dim1, false, has_bias);
   layer->set_quant_type(QuantType::kAwqInt4);
   return layer;
 }
 
 base::Status MatmulLayer::check() const {
+  // 输入是一维向量 [dim1]，输出是一维向量 [dim0]；batch/prompt 由外层逐 token 驱动。
   auto status = check_tensor_with_dim(get_input(0), device_type_, data_type_, dim1_);
   if (!status) {
     LOG(ERROR) << "The input tensor error in the matmul layer.";
@@ -76,6 +82,7 @@ base::Status MatmulLayer::check() const {
       return status;
     }
   } else if (quant_type_ == QuantType::kAwqInt4) {
+    // packed weight 只有一个维度，长度为 ceil(dim0 * dim1 / 2)。
     const int32_t packed_size = (dim0_ * dim1_ + 1) / 2;
     status = check_tensor_with_dim(get_weight(0), device_type_, base::DataType::kDataTypeInt8,
                                    packed_size);
@@ -118,6 +125,7 @@ base::Status MatmulLayer::forward() {
   if (device_type_ == base::DeviceType::kDeviceCUDA) {
     CHECK(cuda_config_ != nullptr);
   }
+  // 根据权重格式选择 kernel；调用者不需要关心 FP32/BF16/INT8/AWQ 的分发细节。
   if (quant_type_ == QuantType::kInt8Sym) {
     kernel::get_matmul_kernel_quant8(device_type_)(get_input(0), get_weight(0), get_output(0),
                                                    group_size_, scales_,
@@ -132,6 +140,7 @@ base::Status MatmulLayer::forward() {
   }
 
   if (has_bias_) {
+    // bias 作为额外向量加到 matmul 输出上，直接复用 add kernel。
     kernel::get_add_kernel(device_type_)(get_output(0), get_bias(0), get_output(0),
                                             cuda_config_ ? cuda_config_->stream : nullptr);
   }
@@ -148,6 +157,7 @@ base::Status MatmulLayer::set_bias(int32_t idx, int32_t& dim, const void* bias_p
   if (!is_quant_layer_) {
     CHECK(data_type == base::DataType::kDataTypeFp32 || data_type == base::DataType::kDataTypeBf16);
     if (data_type == base::DataType::kDataTypeBf16) {
+      // bias 目前按 FP32 参与计算，因此 BF16 bias 在加载时转换为 FP32。
       auto cpu_alloc = base::CPUDeviceAllocatorFactory::get_instance();
       tensor::Tensor bias(base::DataType::kDataTypeFp32, dim, true, cpu_alloc);
       bias.set_device_type(base::DeviceType::kDeviceCPU);
@@ -158,6 +168,7 @@ base::Status MatmulLayer::set_bias(int32_t idx, int32_t& dim, const void* bias_p
       }
       bias_.at(idx) = bias;
     } else {
+      // FP32 bias 直接绑定外部 Buffer，和权重一样不在加载阶段复制。
       size_t size = dim * sizeof(float);
       std::shared_ptr<base::Buffer> buffer =
           std::make_shared<base::Buffer>(size, nullptr, const_cast<void*>(bias_ptr), true);
@@ -172,6 +183,7 @@ base::Status MatmulLayer::set_bias(int32_t idx, int32_t& dim, const void* bias_p
     }
   } else {
     // is quant layer
+    // 量化 bias 复用 INT8 + scale 的布局，scale 紧跟 bias payload。
     size_t size = dim * sizeof(float);
     std::shared_ptr<base::Buffer> buffer =
         std::make_shared<base::Buffer>(size, nullptr, const_cast<void*>(bias_ptr), true);

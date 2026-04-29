@@ -1,3 +1,5 @@
+// 文件说明：加法 kernel 实现，提供 CPU/CUDA 后端的逐元素残差相加。
+
 #include "add_kernel.h"
 #include <armadillo>
 #include "base/base.h"

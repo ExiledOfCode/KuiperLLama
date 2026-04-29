@@ -1,3 +1,5 @@
+"""文件说明：Qwen3 二进制写入模块，将转换后的权重按引擎读取格式落盘。"""
+
 """
 Interactive Script for Running Qwen3 Model
 Author: Bound

@@ -1,3 +1,5 @@
+// 文件说明：缩放求和 kernel 实现，融合缩放和加和计算。
+
 #ifndef SCALE_SUM_KERNEL_H
 #define SCALE_SUM_KERNEL_H
 #include <tensor/tensor.h>

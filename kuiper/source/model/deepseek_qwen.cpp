@@ -1,3 +1,5 @@
+// 文件说明：DeepSeek-Qwen 模型实现，组织 Qwen 蒸馏模型的推理前向链路。
+
 #include "model/deepseek_qwen.h"
 
 namespace model {

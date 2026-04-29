@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""文件说明：DeepSeek-Qwen Python 调用示例，用于与 C++ 推理结果进行对照。"""
+
 from __future__ import annotations
 
 import json

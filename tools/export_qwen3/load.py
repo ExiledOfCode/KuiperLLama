@@ -1,3 +1,5 @@
+"""文件说明：Qwen3 导出加载模块，负责 safetensors 分片读取和权重名称映射。"""
+
 """
 Weight Loading Utility for Qwen3 Model
 Author: Bound

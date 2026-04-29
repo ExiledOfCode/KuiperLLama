@@ -1,3 +1,5 @@
+// 文件说明：矩阵乘 kernel 实现，覆盖普通、cuBLAS、量化和实验优化路径。
+
 #ifndef LLAMA_INFER_MATMUL_KERNEL_H
 #define LLAMA_INFER_MATMUL_KERNEL_H
 #include "base/cuda_config.h"

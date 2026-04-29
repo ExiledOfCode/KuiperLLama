@@ -1,3 +1,5 @@
+// 文件说明：DeepSeek-Llama 模型适配声明，复用 Llama 架构并处理蒸馏模型差异。
+
 #ifndef KUIPER_INCLUDE_MODEL_DEEPSEEK_LLAMA_H_
 #define KUIPER_INCLUDE_MODEL_DEEPSEEK_LLAMA_H_
 

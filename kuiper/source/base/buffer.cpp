@@ -1,3 +1,5 @@
+// 文件说明：Buffer 实现，管理内存块分配状态、外部指针视图和设备迁移。
+
 #include "base/buffer.h"
 #include <glog/logging.h>
 
@@ -9,6 +11,7 @@ Buffer::Buffer(size_t byte_size, std::shared_ptr<DeviceAllocator> allocator, voi
       ptr_(ptr),
       use_external_(use_external) {
   if (!ptr_ && allocator_) {
+    // 没有传入外部指针时，Buffer 拥有 allocator 申请的内存。
     device_type_ = allocator_->device_type();
     use_external_ = false;
     ptr_ = allocator_->allocate(byte_size);
@@ -17,6 +20,7 @@ Buffer::Buffer(size_t byte_size, std::shared_ptr<DeviceAllocator> allocator, voi
 
 Buffer::~Buffer() {
   if (!use_external_) {
+    // 外部视图不释放 ptr_，避免误释放 mmap、page 内 slot 或其他对象管理的显存。
     if (ptr_ && allocator_) {
       allocator_->release(ptr_);
       ptr_ = nullptr;
@@ -38,6 +42,7 @@ size_t Buffer::byte_size() const {
 
 bool Buffer::allocate() {
   if (allocator_ && byte_size_ != 0) {
+    // allocate 可用于先构造空 Buffer、再延迟申请内存的场景。
     use_external_ = false;
     ptr_ = allocator_->allocate(byte_size_);
     if (!ptr_) {
@@ -64,6 +69,7 @@ void Buffer::copy_from(const Buffer& buffer) const {
   CHECK(buffer_device != DeviceType::kDeviceUnknown &&
         current_device != DeviceType::kDeviceUnknown);
 
+  // 当前 Buffer 是目标地址，入参 buffer 是源地址；拷贝方向由源/目标设备组合决定。
   if (buffer_device == DeviceType::kDeviceCPU &&
       current_device == DeviceType::kDeviceCPU) {
     return allocator_->memcpy(buffer.ptr(), this->ptr_, byte_size);
@@ -94,6 +100,7 @@ void Buffer::copy_from(const Buffer* buffer) const {
   CHECK(buffer_device != DeviceType::kDeviceUnknown &&
         current_device != DeviceType::kDeviceUnknown);
 
+  // 与引用版本保持一致：buffer 是源，this 是目标。
   if (buffer_device == DeviceType::kDeviceCPU &&
       current_device == DeviceType::kDeviceCPU) {
     return allocator_->memcpy(buffer->ptr_, this->ptr_, byte_size);

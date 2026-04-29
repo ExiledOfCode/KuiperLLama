@@ -1,3 +1,5 @@
+// 文件说明：设备内存分配接口，抽象 CPU 与 CUDA allocator 的统一生命周期。
+
 #ifndef KUIPER_INCLUDE_BASE_ALLOC_H_
 #define KUIPER_INCLUDE_BASE_ALLOC_H_
 #include <map>
@@ -11,6 +13,8 @@ enum class MemcpyKind {
   kMemcpyCUDA2CUDA = 3,
 };
 
+// 设备分配器统一 CPU/CUDA 内存申请、释放和拷贝接口。
+// Buffer/Tensor 不直接调用 malloc/cudaMalloc，而是通过该抽象决定数据所在设备。
 class DeviceAllocator {
  public:
   explicit DeviceAllocator(DeviceType device_type) : device_type_(device_type) {}
@@ -31,6 +35,7 @@ class DeviceAllocator {
   DeviceType device_type_ = DeviceType::kDeviceUnknown;
 };
 
+// 主机内存分配器。较大的 buffer 会尽量使用对齐分配，便于 SIMD/CUDA H2D 拷贝。
 class CPUDeviceAllocator : public DeviceAllocator {
  public:
   explicit CPUDeviceAllocator();
@@ -40,6 +45,8 @@ class CPUDeviceAllocator : public DeviceAllocator {
   void release(void* ptr) const override;
 };
 
+// CUDA 分配器缓存 cudaMalloc 得到的显存块：
+// 小块按 device 分桶复用，大块单独维护，减少推理阶段频繁 cudaMalloc/cudaFree 的开销。
 struct CudaMemoryBuffer {
   void* data;
   size_t byte_size;

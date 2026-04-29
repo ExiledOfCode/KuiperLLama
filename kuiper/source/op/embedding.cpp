@@ -1,3 +1,5 @@
+// 文件说明：Embedding 算子实现，根据 token id 从词嵌入表取出隐藏向量。
+
 #include "op/embedding.h"
 #include "kernels/cpu/emb_kernel.h"
 #include "kernels/kernels_interface.h"
@@ -7,6 +9,7 @@ namespace {
 
 base::Status check_embedding_weight(const tensor::Tensor& tensor, base::DeviceType device_type,
                                     int32_t vocab_size, int32_t dim) {
+  // embedding 表支持 FP32/BF16；输出统一为 data_type_ 指定的运行时类型。
   if (tensor.is_empty()) {
     return base::error::InvalidArgument("The tensor parameter is empty.");
   }
@@ -39,6 +42,7 @@ EmbeddingLayer::EmbeddingLayer(base::DeviceType device_type, int32_t dim, int32_
 base::Status EmbeddingLayer::check() const {
   const auto& input_tensor = get_input(0);
   const auto& token_size = get_input(1).size();
+  // input(1) 只用 size 表示有效 token 数；input_tensor 的容量可能更大。
   if (token_size > input_tensor.size()) {
     return base::error::InvalidArgument("The number of input tensor is greater than seq len.");
   }
@@ -72,6 +76,7 @@ base::Status EmbeddingLayer::forward() {
   if (device_type_ == base::DeviceType::kDeviceCUDA) {
     CHECK(cuda_config_ != nullptr);
   }
+  // CPU/CUDA kernel 都按 token id 逐个 gather embedding 行。
   kernel::get_emb_kernel(device_type_)(get_input(0), get_weight(0), get_output(0), vocab_size_,
                                        cuda_config_ ? cuda_config_->stream : nullptr);
   return base::StatusCode::kSuccess;

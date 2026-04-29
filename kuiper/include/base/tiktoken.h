@@ -1,3 +1,5 @@
+// 文件说明：Tokenizer 类型适配声明，提供模型文本编码解码所需的词表结构。
+
 #pragma once
 
 #include <re2/re2.h>

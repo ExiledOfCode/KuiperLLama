@@ -1,3 +1,5 @@
+// 文件说明：Qwen2 模型适配声明，定义 Qwen2 层、KV cache 和前向推理接口。
+
 #ifndef KUIPER_INCLUDE_MODEL_LLAMA_H_
 #define KUIPER_INCLUDE_MODEL_LLAMA_H_
 #include <base/cuda_config.h>

@@ -1,3 +1,5 @@
+// 文件说明：矩阵乘层声明，覆盖全精度、INT8、BF16 和 AWQ INT4 权重乘法。
+
 //
 // Created by hello on 2024/5/2.
 //
@@ -7,6 +9,9 @@
 #include <base/cuda_config.h>
 #include "layer.h"
 namespace op {
+// MatmulLayer 表示 y = W * x (+ bias)。
+// dim0 是输出维度，dim1 是输入维度；权重形状为 [dim0, dim1]。
+// 量化路径复用同一接口，通过 QuantType 选择 INT8 对称量化或 AWQ INT4 kernel。
 class MatmulLayer : public LayerParam {
  public:
   explicit MatmulLayer(base::DeviceType device_type, int32_t dim0, int32_t dim1,

@@ -1,3 +1,5 @@
+// 文件说明：RMSNorm kernel 实现，对隐藏向量执行均方根归一化。
+
 #include "rmsnorm_kernel.h"
 
 namespace kernel {

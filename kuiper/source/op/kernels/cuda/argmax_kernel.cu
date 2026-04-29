@@ -1,3 +1,5 @@
+// 文件说明：Argmax kernel 实现，在 logits 中查找最大概率 token。
+
 #include "../kernels_interface.h"
 #include "argmax_kernel.cuh"
 #include "tensor/tensor.h"

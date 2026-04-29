@@ -1,3 +1,5 @@
+// 文件说明：单元测试文件，验证 test_load 相关模块的正确性。
+
 #include <cuda_runtime_api.h>
 #include <fcntl.h>
 #include <glog/logging.h>

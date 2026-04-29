@@ -1,3 +1,5 @@
+// 文件说明：编码算子实现，封装 tokenizer 调用并生成 token 序列。
+
 #include "op/encode.h"
 #include <glog/logging.h>
 #include "base/unicode.h"

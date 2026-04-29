@@ -1,3 +1,5 @@
+"""文件说明：Llama3 权重导出脚本，适配 Llama3 配置和 tokenizer 文件。"""
+
 """
 This script has functions and utilties for model export.
 Basically, we have a bunch of versions of the model, and we

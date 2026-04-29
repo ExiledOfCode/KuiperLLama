@@ -1,3 +1,5 @@
+// 文件说明：RMSNorm kernel 实现，对隐藏向量执行均方根归一化。
+
 #ifndef RMSNORM_KERNEL_CU_CUH
 #define RMSNORM_KERNEL_CU_CUH
 #include <tensor/tensor.h>

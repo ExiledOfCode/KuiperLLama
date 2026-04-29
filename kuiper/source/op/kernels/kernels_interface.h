@@ -1,3 +1,5 @@
+// 文件说明：算子 kernel 函数指针声明，统一 CPU 与 CUDA backend 的分发入口。
+
 #ifndef KERNELS_INTERFACE_H
 #define KERNELS_INTERFACE_H
 #include <base/cuda_config.h>

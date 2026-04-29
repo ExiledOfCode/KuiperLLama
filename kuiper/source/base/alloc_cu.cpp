@@ -1,3 +1,5 @@
+// 文件说明：CUDA allocator 实现，负责显存申请、释放和主机/设备间拷贝。
+
 #include <cuda_runtime_api.h>
 #include "base/alloc.h"
 namespace base {
@@ -9,6 +11,7 @@ void* CUDADeviceAllocator::allocate(size_t byte_size) const {
   cudaError_t state = cudaGetDevice(&id);
   CHECK(state == cudaSuccess);
   if (byte_size > 1024 * 1024) {
+    // 大块显存要求“大小接近”才复用，避免用很大的空闲块承载小一点的请求造成长期碎片。
     auto& big_buffers = big_buffers_map_[id];
     int sel_id = -1;
     for (int i = 0; i < big_buffers.size(); i++) {
@@ -40,6 +43,7 @@ void* CUDADeviceAllocator::allocate(size_t byte_size) const {
   }
 
   auto& cuda_buffers = cuda_buffers_map_[id];
+  // 小块显存复用策略更宽松，主要减少激活/临时 Tensor 在请求间反复 cudaMalloc。
   for (int i = 0; i < cuda_buffers.size(); i++) {
     if (cuda_buffers[i].byte_size >= byte_size && !cuda_buffers[i].busy) {
       cuda_buffers[i].busy = true;
@@ -72,6 +76,7 @@ void CUDADeviceAllocator::release(void* ptr) const {
   cudaError_t state = cudaSuccess;
   for (auto& it : cuda_buffers_map_) {
     if (no_busy_cnt_[it.first] > 1024 * 1024 * 1024) {
+      // 小块缓存累计空闲超过 1GB 时做一次实际 cudaFree，防止服务长时间运行后显存只增不减。
       auto& cuda_buffers = it.second;
       std::vector<CudaMemoryBuffer> temp;
       for (int i = 0; i < cuda_buffers.size(); i++) {
@@ -94,6 +99,7 @@ void CUDADeviceAllocator::release(void* ptr) const {
     auto& cuda_buffers = it.second;
     for (int i = 0; i < cuda_buffers.size(); i++) {
       if (cuda_buffers[i].data == ptr) {
+        // release 默认只标记为空闲，下一次 allocate 可直接复用。
         no_busy_cnt_[it.first] += cuda_buffers[i].byte_size;
         cuda_buffers[i].busy = false;
         return;

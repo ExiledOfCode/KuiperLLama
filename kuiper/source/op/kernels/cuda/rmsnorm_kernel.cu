@@ -1,3 +1,5 @@
+// 文件说明：RMSNorm kernel 实现，对隐藏向量执行均方根归一化。
+
 #include <device_launch_parameters.h>
 #include <cuda_bf16.h>
 #include <cctype>

@@ -1,3 +1,5 @@
+// 文件说明：基础类型工具实现，包括数据类型大小和设备类型辅助函数。
+
 #include "base/base.h"
 
 #include <string>

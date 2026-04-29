@@ -1,3 +1,5 @@
+"""文件说明：LLaMA 权重导出脚本，将 HuggingFace 权重转换为 KuiperLLama 二进制格式。"""
+
 """
 This script has functions and utilties for model export.
 Basically, we have a bunch of versions of the model, and we

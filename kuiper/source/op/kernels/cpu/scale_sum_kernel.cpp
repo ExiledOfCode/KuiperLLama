@@ -1,3 +1,5 @@
+// 文件说明：缩放求和 kernel 实现，融合缩放和加和计算。
+
 #include "scale_sum_kernel.h"
 #include <armadillo>
 #include "base/base.h"

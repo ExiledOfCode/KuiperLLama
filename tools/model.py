@@ -1,3 +1,5 @@
+"""文件说明：导出工具的通用模型结构定义，描述权重名称和层级映射。"""
+
 import math
 import struct
 import inspect

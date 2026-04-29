@@ -1,3 +1,5 @@
+// 文件说明：算子 kernel 分发表实现，根据设备类型返回对应 backend 函数。
+
 #include <base/base.h>
 #include "cpu/add_kernel.h"
 #include "cpu/emb_kernel.h"

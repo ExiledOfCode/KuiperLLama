@@ -1,3 +1,5 @@
+// 文件说明：SmolLM 模型实现，处理轻量模型的层创建、前向计算和输出解码。
+
 #include "model/smollm.h"
 
 namespace model {

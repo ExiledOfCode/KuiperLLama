@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""文件说明：LLaMA 家族通用导出脚本，复用多模型权重转换流程。"""
+
 from __future__ import annotations
 
 import argparse

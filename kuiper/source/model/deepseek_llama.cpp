@@ -1,3 +1,5 @@
+// 文件说明：DeepSeek-Llama 模型实现，组织层创建、权重绑定和 token 生成流程。
+
 #include "model/deepseek_llama.h"
 
 namespace model {

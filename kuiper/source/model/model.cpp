@@ -1,3 +1,5 @@
+// 文件说明：模型基类实现，处理 mmap 权重读取、tokenizer 创建、采样和优化开关。
+
 #include "model/model.h"
 #include <algorithm>
 #include <cctype>
@@ -13,6 +15,7 @@ namespace model {
 namespace {
 
 bool env_flag_enabled(const char* env_name, bool default_value) {
+  // 环境变量开关允许 demo/server 在不重新编译的情况下切换优化路径。
   const char* raw = std::getenv(env_name);
   if (raw == nullptr) {
     return default_value;
@@ -30,6 +33,7 @@ bool env_flag_enabled(const char* env_name, bool default_value) {
 }
 
 int32_t env_positive_int(const char* env_name, int32_t default_value) {
+  // page size、批大小这类参数只接受正整数，非法输入统一回退默认值。
   const char* raw = std::getenv(env_name);
   if (raw == nullptr) {
     return default_value;
@@ -46,6 +50,7 @@ int32_t env_positive_int(const char* env_name, int32_t default_value) {
 }
 
 bool cuda_device_supports_bf16() {
+  // NVIDIA Ampere(sm80) 起提供更完整的 BF16 支持，本项目据此选择原生 BF16 或 FP32 fallback。
   int device = 0;
   cudaError_t err = cudaGetDevice(&device);
   if (err != cudaSuccess) {
@@ -63,6 +68,7 @@ bool cuda_device_supports_bf16() {
 }
 
 base::DataType quant_non_param_dtype_from_header_reserved(int32_t reserved) {
+  // 量化权重文件中，矩阵权重是 INT8/INT4，但 RMSNorm/Embedding 等非参数层可能仍是 FP32/BF16。
   const auto data_type = static_cast<base::DataType>(reserved);
   if (data_type == base::DataType::kDataTypeBf16 ||
       data_type == base::DataType::kDataTypeFp32) {
@@ -83,6 +89,7 @@ Model::Model(base::TokenizerType tokenizer_type, base::ModelType model_type, std
       optimized_weight_loading_(env_flag_enabled("KLLM_OPTIMIZED_WEIGHT_LOADING", false)),
       paged_kv_cache_enabled_(env_flag_enabled("KLLM_PAGED_KV_CACHE", false)),
       paged_kv_cache_page_size_(env_positive_int("KLLM_PAGED_KV_CACHE_PAGE_SIZE", 256)) {
+  // 这些开关只在构造时读取一次，保证同一个 Model 实例生命周期内行为稳定。
   LOG(INFO) << "Optimized weight loading is "
             << (optimized_weight_loading_ ? "enabled" : "disabled")
             << " for model: " << model_path_;
@@ -122,6 +129,7 @@ int32_t Model::paged_kv_cache_startup_tokens() const {
   if (config_ == nullptr) {
     return std::max(1, paged_kv_cache_page_size_);
   }
+  // 启动阶段至少分配一个 page，但不能超过模型上下文长度。
   return std::max(1, std::min(config_->seq_len_, paged_kv_cache_page_size_));
 }
 
@@ -145,6 +153,7 @@ bool Model::init_paged_kv_cache() {
     return false;
   }
   if (!paged_kv_cache_) {
+    // PagedKVCache 内部只分配 startup page，后续 token 访问时再按需增长。
     paged_kv_cache_ = std::make_shared<PagedKVCache>(
         device_type_, config_->layer_num_, config_->seq_len_, config_->kv_dim_,
         paged_kv_cache_startup_tokens());
@@ -166,6 +175,7 @@ bool Model::ensure_paged_kv_cache(int32_t token_pos) const {
 const PagedKVCache* Model::paged_kv_cache() const { return paged_kv_cache_.get(); }
 
 base::Status Model::insert_buffer(ModelBufferType buffer_idx, const tensor::Tensor& tensor) {
+  // buffers_ 是推理期中间张量注册表；重复 key 通常意味着派生模型的内存布局写错。
   if (buffers_.count(buffer_idx) > 0) {
     return base::error::KeyHasExits(std::to_string(int(buffer_idx)) + " has exits in the buffers");
   }
@@ -190,6 +200,7 @@ bool Model::has_buffer(ModelBufferType buffer_idx) const { return buffers_.count
 
 base::Status Model::read_model_file() {
   using namespace base;
+  // 读取模型会重置上一轮权重状态；device_weight_buffer_ 持有优化上传后的整块显存池。
   weight_data_byte_size_ = 0;
   device_weight_buffer_.reset();
   if (model_path_.empty()) {
@@ -213,6 +224,7 @@ base::Status Model::read_model_file() {
 
   if (fread(&file_header, sizeof(ModelFileHeader), 1, file) == 1 &&
       file_header.magic == kModelFileMagic) {
+    // 新格式在权重前写入显式 header，能区分 FP32/INT8/AWQ/BF16 等权重布局。
     if (file_header.version != kModelFileVersion) {
       fclose(file);
       close(fd);
@@ -232,6 +244,7 @@ base::Status Model::read_model_file() {
     }
     weight_data_offset = sizeof(ModelFileHeader) + sizeof(ModelConfig);
   } else {
+    // 兼容旧版导出文件：文件头直接就是 ModelConfig，量化类型只能由调用侧参数判断。
     std::rewind(file);
     weight_type_ = is_quant_model_ ? base::WeightType::kWeightTypeInt8
                                    : base::WeightType::kWeightTypeFp32;
@@ -248,6 +261,7 @@ base::Status Model::read_model_file() {
 
   if (weight_type_ == base::WeightType::kWeightTypeInt8 ||
       weight_type_ == base::WeightType::kWeightTypeAwqInt4) {
+    // 量化权重在配置后额外写入 group_size，用来解释 scales/zeros 的分组粒度。
     if (fread(&group_size_, sizeof(int32_t), 1, file) != 1) {
       fclose(file);
       close(fd);
@@ -266,6 +280,7 @@ base::Status Model::read_model_file() {
   }
 
   if (weight_type_ == base::WeightType::kWeightTypeFp32) {
+    // 选择 RawModelData 派生类后，后续 create_param_layers 只需要按导出顺序递增 offset。
     raw_model_data_ = std::make_shared<RawModelDataFp32>();
     weight_data_type_ = base::DataType::kDataTypeFp32;
   } else if (weight_type_ == base::WeightType::kWeightTypeInt8) {
@@ -301,6 +316,7 @@ base::Status Model::read_model_file() {
   if (weight_type_ == base::WeightType::kWeightTypeFp32 ||
       weight_type_ == base::WeightType::kWeightTypeInt8 ||
       weight_type_ == base::WeightType::kWeightTypeAwqInt4) {
+    // FP32/INT8/AWQ payload 可直接作为外部内存视图绑定到各层 Tensor。
     raw_model_data_->weight_data = static_cast<int8_t*>(raw_model_data_->data) + weight_data_offset;
     weight_data_byte_size_ = raw_model_data_->file_size - weight_data_offset;
   } else {
@@ -312,6 +328,7 @@ base::Status Model::read_model_file() {
     const auto* source = reinterpret_cast<const uint16_t*>(
         static_cast<int8_t*>(raw_model_data_->data) + weight_data_offset);
     if (device_type_ == base::DeviceType::kDeviceCUDA && cuda_device_supports_bf16()) {
+      // sm80+ GPU 可直接消费 BF16 权重，避免启动阶段扩展成 FP32 占用更多内存。
       bf16_data->use_source_weights(source);
       weight_data_type_ = base::DataType::kDataTypeBf16;
       weight_data_byte_size_ = payload_bytes;
@@ -335,6 +352,7 @@ base::Status Model::read_model_file() {
 }
 
 base::Status Model::generate_model_infos(const ModelConfig& config) const {
+  // 将文件中的基础配置转为 kernel 需要的派生配置，例如 kv_dim/head_size。
   config_->dim_ = config.dim;
   config_->hidden_dim_ = config.hidden_dim;
   config_->layer_num_ = config.layer_num;
@@ -368,6 +386,7 @@ base::Status Model::create_encode_layer() {
   using namespace base;
 
   // create token encode decode layer
+  // 编译开关决定可用 tokenizer：Qwen-only build 中优先使用 tokenizer.json BPE。
   if (tokenizer_type_ == TokenizerType::kEncodeSpe) {
 #if !defined(QWEN2_SUPPORT) && !defined(QWEN3_SUPPORT)
     encode_layer_ = std::make_unique<op::SpeEncodeLayer>(this->token_path_, true, false);
@@ -400,8 +419,7 @@ base::Status Model::gen_model_from_file() {
   using namespace base;
   config_ = std::make_unique<TransformerConfig>();
 
-  // init sentence piece processor
-  // google sentence piece
+  // 初始化顺序固定为 tokenizer -> mmap 权重 -> 创建层；后续层创建会依赖词表大小和权重类型。
   auto create_encode_status = create_encode_layer();
   if (!create_encode_status) {
     LOG(ERROR) << "Create the encode layer failed!";
@@ -445,6 +463,7 @@ std::string Model::decode(std::vector<int32_t> token_idxs) const {
 std::pair<tensor::Tensor, tensor::Tensor> Model::slice_kv_cache(int32_t layer_idx,
                                                                 int32_t token_pos) const {
   if (use_paged_kv_cache()) {
+    // 分页模式返回当前 token 所在 page 内的 key/value 视图，避免预分配完整 seq_len cache。
     CHECK_NE(paged_kv_cache_, nullptr);
     return paged_kv_cache_->slot(layer_idx, token_pos, device_type_);
   }
@@ -473,9 +492,11 @@ tensor::Tensor Model::fill_input(const tensor::Tensor& pos_tensor,
 
   int32_t index = 0;
   if (is_prompt) {
+    // prompt 预填充阶段一次拿到整个 prompt 的 embedding，按当前位置切出单 token 向量。
     index = pos;
   }
 #if defined(QWEN3_SUPPORT)
+  // Qwen3 残差流使用 hidden_dim_，这里创建外部 Buffer 视图，避免拷贝 embedding 数据。
   std::shared_ptr<base::Buffer> input_emb_buffer = std::make_shared<base::Buffer>(
       config_->hidden_dim_ * sizeof(float), nullptr,
       input_embeddings.ptr<float>(index * config_->hidden_dim_), true);

@@ -1,3 +1,5 @@
+// 文件说明：RMSNorm 算子实现，执行归一化前的形状检查和 backend 分发。
+
 #include "op/rmsnorm.h"
 #include <cuda_runtime_api.h>
 #include <armadillo>
@@ -8,6 +10,7 @@ namespace {
 
 base::Status check_rmsnorm_weight(const tensor::Tensor& tensor, base::DeviceType device_type,
                                   int32_t dim) {
+  // RMSNorm 权重可以是 FP32，也可以在原生 BF16 路径中保持 BF16。
   if (tensor.is_empty()) {
     return base::error::InvalidArgument("The tensor parameter is empty.");
   }
@@ -45,9 +48,11 @@ base::Status RmsNormLayer::forward() {
     CHECK(cuda_config_ != nullptr);
   }
   if (input.dims_size() == 1) {
+    // 普通残差流归一化。
     kernel::get_rmsnorm_kernel(device_type_)(input, weight, output,
                                              cuda_config_ ? cuda_config_->stream : nullptr);
   } else {
+    // query/key norm：对最后一维 head_size 做归一化，前面的 head 维度作为 batch。
     kernel::get_rmsnorm_dim_kernel(device_type_)(input, weight, output, dim_,
                                                  cuda_config_ ? cuda_config_->stream : nullptr);
   }
@@ -58,6 +63,7 @@ base::Status RmsNormLayer::forward() {
 base::Status RmsNormLayer::check() const {
   int32_t dim_size = get_input(0).dims_size();
   if (dim_size > 1) {
+    // 多维输入只要求最后一维等于 dim_，前面的维度由 kernel 当作 batch。
     int dim_head_size = get_input(0).get_dim(dim_size - 1);
     if (dim_head_size == dim_) {
       return base::error::Success();

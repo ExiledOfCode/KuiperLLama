@@ -1,3 +1,5 @@
+// 文件说明：单元测试文件，验证 test_cu_matmul 相关模块的正确性。
+
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <cuda_runtime_api.h>

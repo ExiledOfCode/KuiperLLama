@@ -1,3 +1,5 @@
+// 文件说明：残差加法算子实现，校验张量并分发到 CPU/CUDA kernel。
+
 #include "op/add.h"
 #include "kernels/kernels_interface.h"
 namespace op {
@@ -12,6 +14,7 @@ base::Status VecAddLayer::check() const {
   tensor::Tensor input2 = this->get_input(1);
   int32_t size = input1.size();
   base::Status status;
+  // 残差加法要求两个输入和输出都是相同长度的一维向量。
   status = check_tensor_with_dim(input1, device_type_, data_type_, size);
   if (!status) {
     LOG(ERROR) << "The input tensor 1 error in the add layer.";
@@ -43,6 +46,7 @@ base::Status VecAddLayer::forward() {
   if (device_type_ == base::DeviceType::kDeviceCUDA) {
     CHECK(cuda_config_ != nullptr);
   }
+  // output 可以和 input1/input2 指向同一个 Tensor，kernel 需支持原地写回。
   kernel::get_add_kernel(device_type_)(input1, input2, output,
                                        cuda_config_ ? cuda_config_->stream : nullptr);
   return base::error::Success();

@@ -1,3 +1,5 @@
+// 文件说明：多头注意力 kernel 实现，计算 QK softmax 和 V 加权求和。
+
 #include <base/cuda_config.h>
 #include <tensor/tensor.h>
 #include <cfloat>
@@ -78,6 +80,7 @@ __global__ void multi_head_attention_kernel(int32_t pos, int32_t seq_len, float*
   for (int t = threadIdx.x; t <= pos; t += blockDim.x) {
     float* key_head = nullptr;
     if (paged_kv_cache) {
+      // 分页 KV cache 通过 page table 间接寻址，逻辑 token 位置仍保持连续。
       const int page_idx = t / page_size;
       const int page_token = t % page_size;
       float* page_base = key_page_table[page_idx];
@@ -141,6 +144,7 @@ void mha_kernel_cu(int32_t pos, int32_t head_num, int32_t layer_index, int32_t s
   float* key_cache = paged_kv_cache ? nullptr : const_cast<float*>(key_cache_tensor.ptr<float>());
   float* value_cache =
       paged_kv_cache ? nullptr : const_cast<float*>(value_cache_tensor.ptr<float>());
+  // paged_kv_cache=false 时 key_pages/value_pages 为 nullptr，kernel 会走连续 cache 分支。
   float** key_pages = const_cast<float**>(reinterpret_cast<float* const*>(key_page_table));
   float** value_pages = const_cast<float**>(reinterpret_cast<float* const*>(value_page_table));
 

@@ -1,3 +1,5 @@
+// 文件说明：TinyLlama 模型适配声明，支持 TinyLlama 的模型结构和生成流程。
+
 #ifndef KUIPER_INCLUDE_MODEL_TINYLLAMA_H_
 #define KUIPER_INCLUDE_MODEL_TINYLLAMA_H_
 

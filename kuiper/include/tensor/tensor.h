@@ -1,3 +1,5 @@
+// 文件说明：Tensor 抽象声明，封装形状、数据类型、设备 buffer 和指针访问。
+
 #ifndef KUIPER_INCLUDE_TENSOR_TENSOR_H_
 #define KUIPER_INCLUDE_TENSOR_TENSOR_H_
 #include <driver_types.h>
@@ -9,6 +11,12 @@
 #include "base/buffer.h"
 namespace tensor {
 
+// Tensor 只保存“形状 + 数据类型 + Buffer 句柄”，不关心具体算子语义。
+//
+// 注意：
+// - Tensor 默认可拷贝，拷贝后多个 Tensor 会共享同一个 Buffer；
+// - 需要深拷贝时使用 clone()；
+// - assign() 可把 Tensor 重新绑定到外部 Buffer，权重批量上传和 KV cache slot 都依赖这个能力。
 class Tensor {
  public:
   explicit Tensor() = default;
@@ -36,6 +44,7 @@ class Tensor {
 
   bool is_empty() const;
 
+  // 根据 alloc/need_alloc/ptr 组合创建内部 Buffer 或外部视图。
   void init_buffer(std::shared_ptr<base::DeviceAllocator> alloc, base::DataType data_type,
                    bool need_alloc, void* ptr);
 
@@ -65,6 +74,7 @@ class Tensor {
 
   bool assign(std::shared_ptr<base::Buffer> buffer);
 
+  // 重置元信息并丢弃当前 buffer；不会主动释放外部视图指向的内存。
   void reset(base::DataType data_type, const std::vector<int32_t>& dims);
 
   void set_device_type(base::DeviceType device_type) const;
@@ -88,7 +98,7 @@ class Tensor {
   tensor::Tensor clone() const;
 
  private:
-  size_t size_ = 0;
+  size_t size_ = 0;  // 所有维度的元素个数乘积，不是字节数。
   std::vector<int32_t> dims_;
   std::shared_ptr<base::Buffer> buffer_;
   base::DataType data_type_ = base::DataType::kDataTypeUnknown;

@@ -1,3 +1,5 @@
+// 文件说明：温度采样 kernel 实现，根据概率分布随机选择下一个 token。
+
 #include "temperature_sampler_kernel.cuh"
 
 #include <cuda_runtime_api.h>

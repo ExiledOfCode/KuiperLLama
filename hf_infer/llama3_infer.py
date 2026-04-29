@@ -1,3 +1,5 @@
+"""文件说明：HuggingFace Llama3 参考推理脚本，用于校验导出权重和生成结果。"""
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model = "meta-llama/Llama-3.2-1B"

@@ -1,3 +1,5 @@
+// 文件说明：RoPE kernel 实现，按 token 位置旋转 Q/K 向量。
+
 #ifndef LLAMA_INFER_ROPE_KERNEL_H
 #define LLAMA_INFER_ROPE_KERNEL_H
 #include "tensor/tensor.h"

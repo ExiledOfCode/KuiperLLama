@@ -1,3 +1,5 @@
+// 文件说明：Llama3.2 模型适配声明，覆盖 3.2 系列配置和生成流程。
+
 #ifndef KUIPER_INCLUDE_MODEL_LLAMA32_H_
 #define KUIPER_INCLUDE_MODEL_LLAMA32_H_
 

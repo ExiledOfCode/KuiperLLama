@@ -1,3 +1,5 @@
+// 文件说明：矩阵乘 kernel 实现，覆盖普通、cuBLAS、量化和实验优化路径。
+
 #ifndef MATMUL_KERNEL_CU_CUH
 #define MATMUL_KERNEL_CU_CUH
 #include "../kernels_interface.h"

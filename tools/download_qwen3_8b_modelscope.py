@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""文件说明：ModelScope 下载脚本，用于获取 Qwen3 8B 模型文件。"""
+
 """Download Qwen/Qwen3-8B from ModelScope into the local models directory."""
 
 from __future__ import annotations

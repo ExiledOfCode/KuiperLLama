@@ -1,3 +1,5 @@
+// 文件说明：CUDA 测试辅助实现，提供测试用的设备初始化和数据拷贝工具。
+
 #include <glog/logging.h>
 #include "utils.cuh"
 __global__ void test_function_cu(float* cu_arr, int32_t size, float value) {

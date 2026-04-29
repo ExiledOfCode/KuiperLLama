@@ -1,3 +1,5 @@
+// 文件说明：加法 kernel 实现，提供 CPU/CUDA 后端的逐元素残差相加。
+
 #ifndef KUIPER_INCLUDE_OP_KERNEL
 #define KUIPER_INCLUDE_OP_KERNEL
 #include "tensor/tensor.h"

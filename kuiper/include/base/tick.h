@@ -1,3 +1,5 @@
+// 文件说明：轻量计时宏定义，用于本地调试阶段输出代码块耗时。
+
 #ifndef KUIPER_INFER_INCLUDE_TICK_HPP_
 #define KUIPER_INFER_INCLUDE_TICK_HPP_
 #include <chrono>

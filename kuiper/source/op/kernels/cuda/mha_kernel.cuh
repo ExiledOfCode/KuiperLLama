@@ -1,3 +1,5 @@
+// 文件说明：多头注意力 kernel 实现，计算 QK softmax 和 V 加权求和。
+
 #ifndef MHA_KERNEL_H
 #define MHA_KERNEL_H
 namespace kernel {

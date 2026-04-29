@@ -1,3 +1,5 @@
+// 文件说明：分页 KV Cache 声明，用按需分配的 page 降低长上下文显存占用。
+
 #ifndef KUIPER_INCLUDE_MODEL_PAGED_KV_CACHE_H_
 #define KUIPER_INCLUDE_MODEL_PAGED_KV_CACHE_H_
 
@@ -12,16 +14,24 @@
 
 namespace model {
 
+// 分页 KV cache 以 page 为单位按需扩容。
+//
+// 连续 KV cache 会一次性分配 [layer_num, seq_len, kv_dim] 两块大 buffer；
+// 分页模式只在访问到某个 token_pos 时确保对应 page 存在，并把 page table 提供给 CUDA MHA kernel。
+// 这样长上下文模型启动时不需要立即占满最大上下文显存。
 class PagedKVCache {
  public:
   PagedKVCache(base::DeviceType device_type, int32_t layer_num, int32_t max_seq_len,
                int32_t kv_dim, int32_t page_size);
 
+  // 确保 token_pos 所在 page 已经存在，超过 max_seq_len 会返回 false。
   bool ensure_token_capacity(int32_t token_pos);
 
+  // 返回当前 layer/token 的 K/V 写入视图。返回 Tensor 不拥有 page 内存。
   std::pair<tensor::Tensor, tensor::Tensor> slot(int32_t layer_idx, int32_t token_pos,
                                                  base::DeviceType tensor_device_type) const;
 
+  // CUDA 模式返回设备端 page table，CPU 模式返回 host vector.data()。
   const void* key_page_table_ptr() const;
 
   const void* value_page_table_ptr() const;
@@ -39,6 +49,7 @@ class PagedKVCache {
   size_t allocated_kv_byte_size() const;
 
  private:
+  // 每次扩容会同时分配 key page 和 value page，并刷新 page table。
   bool allocate_page();
 
   bool refresh_page_tables();

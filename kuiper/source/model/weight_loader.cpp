@@ -1,3 +1,5 @@
+// 文件说明：优化权重加载实现，将连续权重区域批量上传并重新绑定张量视图。
+
 #include "model/weight_loader.h"
 
 #include <algorithm>
@@ -14,6 +16,7 @@ namespace model {
 namespace {
 
 void append_tensor_if_valid(std::vector<tensor::Tensor*>& tensors, tensor::Tensor& tensor) {
+  // 只收集已经绑定有效 Buffer 的 Tensor；空 Tensor 可能代表该层没有 bias/zeros。
   if (!tensor.is_empty()) {
     tensors.push_back(&tensor);
   }
@@ -21,6 +24,7 @@ void append_tensor_if_valid(std::vector<tensor::Tensor*>& tensors, tensor::Tenso
 
 void collect_layer_tensors(const std::shared_ptr<op::Layer>& layer,
                            std::vector<tensor::Tensor*>& tensors) {
+  // 优化上传只处理参数层；RoPE、Add、MHA 等无权重层不参与。
   auto param_layer = std::dynamic_pointer_cast<op::LayerParam>(layer);
   if (!param_layer) {
     return;
@@ -40,6 +44,7 @@ void collect_layer_tensors(const std::shared_ptr<op::Layer>& layer,
   if (!matmul_layer || !matmul_layer->has_bias()) {
     return;
   }
+  // Matmul 的 bias 不在 LayerParam 通用 weights_ 里，需要额外收集。
   for (size_t idx = 0; idx < matmul_layer->bias_size(); ++idx) {
     append_tensor_if_valid(tensors, matmul_layer->get_bias(static_cast<int32_t>(idx)));
   }
@@ -56,6 +61,7 @@ bool tensor_is_within_range(const tensor::Tensor& tensor, const char* host_base,
   const auto* tensor_begin = static_cast<const char*>(buffer->ptr());
   const auto* tensor_end = tensor_begin + tensor.byte_size();
   const auto* host_end = host_base + host_bytes;
+  // 只有完全落在 mmap payload 内的 Tensor 才能通过“整段拷贝 + offset rebind”处理。
   return tensor_begin >= host_base && tensor_end <= host_end;
 }
 
@@ -70,6 +76,7 @@ std::shared_ptr<base::Buffer> make_tensor_pool_view(const tensor::Tensor& tensor
   }
 
   const auto offset = static_cast<size_t>(static_cast<const char*>(current_buffer->ptr()) - host_base);
+  // 保持 host mmap 内的相对偏移不变，在 device_base 上创建同尺寸外部视图。
   auto view_buffer = std::make_shared<base::Buffer>(
       tensor.byte_size(), nullptr, static_cast<char*>(device_base) + offset, true);
   view_buffer->set_device_type(base::DeviceType::kDeviceCUDA);
@@ -103,6 +110,7 @@ std::shared_ptr<base::Buffer> bulk_load_param_layers_to_cuda(
   std::vector<tensor::Tensor*> outlier_tensors;
   bulk_tensors.reserve(tensors.size());
   outlier_tensors.reserve(tensors.size());
+  // 连续 mmap 区间内的 tensor 可以整体拷贝；bias 或临时生成的 tensor 作为 outlier 单独处理。
   for (tensor::Tensor* tensor : tensors) {
     if (tensor == nullptr) {
       return nullptr;
@@ -134,6 +142,7 @@ std::shared_ptr<base::Buffer> bulk_load_param_layers_to_cuda(
     }
     const void* host_ptr = buffer->ptr();
     const size_t byte_size = tensor->byte_size();
+    // 多个 Tensor 可能共享同一段外部 Buffer，同指针同大小时只拷贝一次，再一起 rebind。
     auto group_it = std::find_if(
         outlier_groups.begin(), outlier_groups.end(),
         [host_ptr, byte_size](const OutlierCopyGroup& group) {
@@ -155,6 +164,7 @@ std::shared_ptr<base::Buffer> bulk_load_param_layers_to_cuda(
     total_bytes += group.byte_size;
   }
 
+  // 先为连续权重池申请一整块显存，保持原 mmap 偏移，后续 tensor 只需换成显存视图。
   auto cuda_allocator = base::CUDADeviceAllocatorFactory::get_instance();
   auto device_buffer = std::make_shared<base::Buffer>(contiguous_bytes, cuda_allocator);
   if (!device_buffer || !device_buffer->ptr()) {
@@ -175,6 +185,7 @@ std::shared_ptr<base::Buffer> bulk_load_param_layers_to_cuda(
   if (register_status == cudaSuccess) {
     host_registered = true;
   } else {
+    // pin 住 mmap 内存可以提升 H2D 传输稳定性；失败时仍允许 pageable copy 兜底。
     LOG(WARNING) << "cudaHostRegister failed, fallback to pageable host transfer for bulk weight "
                     "upload: "
                  << cudaGetErrorString(register_status);
@@ -214,6 +225,7 @@ std::shared_ptr<base::Buffer> bulk_load_param_layers_to_cuda(
 
   std::vector<std::pair<tensor::Tensor*, std::shared_ptr<base::Buffer>>> rebound_views;
   rebound_views.reserve(bulk_tensors.size());
+  // 拷贝成功后再统一 rebind，避免中途失败时把部分 tensor 留在混合状态。
   for (tensor::Tensor* tensor : bulk_tensors) {
     auto view_buffer = make_tensor_pool_view(*tensor, contiguous_base, device_buffer->ptr());
     if (!view_buffer) {
@@ -241,6 +253,7 @@ std::shared_ptr<base::Buffer> bulk_load_param_layers_to_cuda(
   std::vector<const void*> registered_outlier_ptrs;
   registered_outlier_ptrs.reserve(outlier_groups.size());
   for (auto& group : outlier_groups) {
+    // outlier 通常是独立 bias 或非连续量化辅助数据；它们不共享主显存池。
     auto outlier_buffer = std::make_shared<base::Buffer>(group.byte_size, cuda_allocator);
     if (!outlier_buffer || !outlier_buffer->ptr()) {
       if (progress_callback) {
@@ -289,6 +302,7 @@ std::shared_ptr<base::Buffer> bulk_load_param_layers_to_cuda(
     }
     for (auto& entry : outlier_buffers) {
       for (tensor::Tensor* tensor : entry.first->tensors) {
+        // 同一 outlier 拷贝组内的 Tensor 共享同一块显存 Buffer。
         if (!tensor->assign(entry.second)) {
           if (progress_callback) {
             progress_callback(0, total_bytes, "weights.bulk_outlier_rebind_failed");

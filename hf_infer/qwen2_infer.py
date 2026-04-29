@@ -1,3 +1,5 @@
+"""文件说明：HuggingFace Qwen2 参考推理脚本，用于和 KuiperLLama 后端输出对齐。"""
+
 # 此文件主要用来比对 c++/cuda 推理的正确性
 from transformers import AutoModelForCausalLM, AutoTokenizer
 

@@ -1,3 +1,5 @@
+// 文件说明：矩阵乘 kernel 实现，覆盖普通、cuBLAS、量化和实验优化路径。
+
 #include <tensor/tensor.h>
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
@@ -36,6 +38,7 @@ MatmulCudaImpl resolve_matmul_impl() {
     return MatmulCudaImpl::kKuiper;
   }
 
+  // 服务端算子开关最终会落到该环境变量，便于无重编译切换 kernel 实现做对比实验。
   std::string value(raw);
   for (char& ch : value) {
     ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -187,6 +190,7 @@ __global__ void matmul_kernel_cu_lab_cp_async_fp32_vec(const float* input, const
   }
 
   if (row < output_dim && input_dim >= TILE_K && can_vector_load) {
+    // sm80+ 上用 cp.async 双缓冲预取权重 tile，减少 decode 阶段 global memory 等待。
     cp_async_ca<16>(&shared_weight[current][lane][0], weight + row * input_dim);
     cp_async_ca<16>(&shared_weight[current][lane][4], weight + row * input_dim + 4);
   } else {
@@ -450,6 +454,7 @@ __global__ void matmul_kernel_cu_fp32_awq_int4(const float* input, const uint8_t
     }
     sdata[tid] = 0.f;
     for (int i = tid; i < M; i += THREAD_PER_BLOCK) {
+      // AWQ INT4 每字节打包两个权重，计算时按 group_size 读取 scale/zero 并即时反量化。
       const int weight_idx = p * M + i;
       const uint8_t packed = packed_weight[weight_idx >> 1];
       const uint8_t q = (weight_idx & 1) == 0 ? (packed & 0x0f) : (packed >> 4);
@@ -529,6 +534,7 @@ void matmul_kernel_cu_cublas(const tensor::Tensor& input, const tensor::Tensor& 
   const float beta = 0.0f;
   cublasStatus_t status = CUBLAS_STATUS_SUCCESS;
   if (weight.data_type() == base::DataType::kDataTypeBf16) {
+    // cuBLAS BF16 GEMM 需要 input/weight 同为 BF16，累加结果仍写回 FP32 logits/激活。
     auto alloc_cu = base::CUDADeviceAllocatorFactory::get_instance();
     tensor::Tensor input_bf16(base::DataType::kDataTypeBf16, input.dims(), true, alloc_cu);
     const int input_size = static_cast<int>(input.size());
@@ -567,6 +573,7 @@ void matmul_kernel_cu_lab_cp_async(const tensor::Tensor& input, const tensor::Te
   CHECK(output.device_type() == base::DeviceType::kDeviceCUDA);
 
   if (!lab_cp_async_runtime_supported()) {
+    // 实验 cp.async kernel 只在 Ampere 及以上设备启用，不满足条件时走稳定默认实现。
     log_lab_cp_async_fallback_once("requires sm80+ runtime support");
     matmul_kernel_cu_kuiper(input, weight, output, scale, config);
     return;

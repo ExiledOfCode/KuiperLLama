@@ -1,3 +1,5 @@
+// 文件说明：Qwen3 模型实现，支持 BF16/INT8/AWQ 权重、推理跟踪和分页 KV Cache。
+#define QWEN3_SUPPORT
 #ifdef QWEN3_SUPPORT
 #include "model/qwen3.h"
 #include <algorithm>
@@ -24,6 +26,7 @@ struct ProfileAccumulator {
   int64_t calls = 0;
 };
 
+// 每个线程独立记录 profile，避免服务端多实例/测试并行时互相污染。
 thread_local std::unordered_map<std::string, ProfileAccumulator> g_qwen3_op_profile;
 thread_local bool g_qwen3_profile_enabled = true;
 
@@ -48,6 +51,7 @@ size_t qwen3_rope_fill_progress_bytes(const model::TransformerConfig& config) {
 
 size_t qwen3_runtime_progress_bytes(const model::TransformerConfig& config,
                                     int32_t kv_cache_tokens) {
+  // 估算运行时 buffer 分配量，用于服务端加载进度。该值只用于展示，不参与内存分配。
   size_t total = 0;
   total += dims_byte_size(base::DataType::kDataTypeInt32, {1});
   total += dims_byte_size(base::DataType::kDataTypeFp32,
@@ -91,6 +95,7 @@ void record_profile(const char* op_name, double cost_ms) {
 
 template <class Fn>
 base::Status run_profiled(const char* op_name, Fn&& fn) {
+  // 用模板包装 lambda，避免每个算子调用点手写计时和 profile 汇总代码。
   const auto begin = std::chrono::steady_clock::now();
   base::Status status = fn();
   const auto end = std::chrono::steady_clock::now();
@@ -99,6 +104,7 @@ base::Status run_profiled(const char* op_name, Fn&& fn) {
 }
 
 std::vector<model::OpProfileStat> snapshot_profile_stats() {
+  // 返回时按总耗时降序，前端/日志能直接看到最耗时的算子。
   std::vector<model::OpProfileStat> stats;
   stats.reserve(g_qwen3_op_profile.size());
   for (const auto& [name, value] : g_qwen3_op_profile) {
@@ -128,6 +134,7 @@ std::shared_ptr<base::Buffer> Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaC
                                                    bool optimized_weight_loading,
                                                    const void* contiguous_weight_data,
                                                    size_t contiguous_weight_bytes) {
+  // 参数层收集顺序不改变模型语义，只用于统一设置 CUDA stream、统计字节数和尝试批量上传。
   auto layer_weight_bytes = [](const std::shared_ptr<op::Layer>& layer) -> size_t {
     auto param_layer = std::dynamic_pointer_cast<op::LayerParam>(layer);
     return param_layer ? param_layer->weight_byte_size() : 0;
@@ -169,6 +176,7 @@ std::shared_ptr<base::Buffer> Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaC
   size_t loaded_bytes = 0;
 
   auto copy_layer = [&](const std::shared_ptr<op::Layer>& layer, const std::string& stage) {
+    // legacy 路径逐层调用 to_cuda，每完成一层按该层权重大小推进进度。
     if (!layer) {
       return;
     }
@@ -186,6 +194,7 @@ std::shared_ptr<base::Buffer> Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaC
     progress_callback(0, total_bytes, "start");
   }
 
+  // 非参数层只需要绑定 CUDA 上下文；真正占大头的权重层在后面统一上传。
   if (add_layer_) {
     add_layer_->set_cuda_config(config);
     add_layer_->to_cuda();
@@ -210,6 +219,7 @@ std::shared_ptr<base::Buffer> Qwen3Layers::to_cuda(std::shared_ptr<kernel::CudaC
     if (progress_callback) {
       progress_callback(0, contiguous_weight_bytes, "weights.bulk_prepare");
     }
+    // mmap 权重通常是连续内存，批量上传后再把各层 tensor 重新绑定到同一块显存视图。
     auto device_buffer = bulk_load_param_layers_to_cuda(param_layers, config, progress_callback,
                                                         contiguous_weight_data, contiguous_weight_bytes);
     if (device_buffer) {
@@ -274,6 +284,7 @@ Qwen3Model::Qwen3Model(base::TokenizerType tokenizer_type, std::string token_pat
 
 base::Status Qwen3Model::init(base::DeviceType device_type) {
   using namespace base;
+  // init 是模型生命周期入口：检查路径/设备、创建 CUDA stream、读取权重、分配运行时 buffer。
   if (token_path_.empty()) {
     return error::PathNotValid(token_path_);
   }
@@ -296,8 +307,10 @@ base::Status Qwen3Model::init(base::DeviceType device_type) {
   if (!read_status) {
     return read_status;
   }
+  // 层已经绑定到 mmap 权重，此处再按设备创建中间 buffer，并按需把参数迁移到 CUDA。
   init_mem();
   if (device_type_ == base::DeviceType::kDeviceCPU) {
+    // RoPE sin/cos cache 是纯配置相关数据，初始化后整个请求生命周期复用。
     kernel::sin_cos_cache_calc_cpu(config_->head_size_, config_->seq_len_,
                                    get_buffer(ModelBufferType::kSinCache).ptr<float>(),
                                    get_buffer(ModelBufferType::kCosCache).ptr<float>());
@@ -330,6 +343,7 @@ base::Status Qwen3Model::forward(const tensor::Tensor& input, const tensor::Tens
     return base::error::InternalError("Unsupported int8 quant in the cpu device");
   }
 
+  // 单 token decode 路径：每层依次执行 attn rmsnorm -> qkv/rope/cache -> attention -> FFN。
   for (int32_t layer_idx = 0; layer_idx < config_->layer_num_; ++layer_idx) {
     attention_rms(layer_idx, input);
     // attention (wq wk wv @ input)
@@ -345,6 +359,7 @@ base::Status Qwen3Model::forward(const tensor::Tensor& input, const tensor::Tens
 
 void Qwen3Model::create_nonparam_layers() {
   CHECK(qwen_layers_ != nullptr);
+  // 非参数层不持有权重，创建一次后在所有 Transformer block 间复用。
   qwen_layers_->rope_layer_ = std::make_shared<op::RoPELayer>(
       device_type_, config_->dim_, config_->kv_dim_, config_->head_size_);
 
@@ -362,6 +377,8 @@ void Qwen3Model::create_param_quant_layers() {
   CHECK(is_quant_model_);
   CHECK(qwen_layers_ != nullptr);
 
+  // pos 按导出脚本写入顺序在 payload 中前进。量化层的实际步长由 weight_byte_size() 给出，
+  // 因为 INT8/AWQ 后面还紧跟 scales/zeros。
   size_t pos = 0;
   const int32_t dim = config_->dim_;
   const int32_t kv_dim = config_->kv_dim_;
@@ -371,6 +388,7 @@ void Qwen3Model::create_param_quant_layers() {
   const auto non_param_data_type = quant_non_param_data_type_;
 
   auto non_param_bytes = [non_param_data_type](std::initializer_list<int32_t> dims) {
+    // 量化模型中的 RMSNorm/Embedding 等非矩阵参数可能是 FP32 或 BF16。
     size_t bytes = base::DataTypeSize(non_param_data_type);
     for (int32_t dim : dims) {
       bytes *= static_cast<size_t>(dim);
@@ -378,6 +396,7 @@ void Qwen3Model::create_param_quant_layers() {
     return bytes;
   };
   auto create_quant_matmul = [&](int32_t out_dim, int32_t in_dim) {
+    // MatmulLayer 负责解释 INT8 或 AWQ INT4 的具体 payload 布局。
     std::shared_ptr<op::MatmulLayer> layer;
     if (weight_type_ == base::WeightType::kWeightTypeAwqInt4) {
       layer = op::MatmulLayer::create_awq_int4(device_type_, out_dim, in_dim);
@@ -479,6 +498,7 @@ void Qwen3Model::create_param_quant_layers() {
 void Qwen3Model::create_param_layers() {
   CHECK(qwen_layers_ != nullptr);
 
+  // 全精度/BF16 权重 offset 以元素为单位推进；RawModelData 根据权重类型解释 offset。
   size_t pos = 0;
   int32_t dim = config_->dim_;
   int32_t kv_dim = config_->kv_dim_;
@@ -610,6 +630,7 @@ void Qwen3Model::init_mem() {
   const int32_t kv_cache_tokens =
       paged_kv_cache ? paged_kv_cache_startup_tokens() : config_->seq_len_;
   auto emit_runtime_progress = [&](size_t delta_bytes, const std::string& stage) {
+    // 运行时 buffer 进度叠加在权重进度之后，形成一个单调递增的总体加载进度。
     if (runtime_total_bytes == 0) {
       return;
     }
@@ -622,6 +643,7 @@ void Qwen3Model::init_mem() {
     CHECK_NE(cuda_config_, nullptr);
     weight_total_bytes = contiguous_weight_data_byte_size();
     runtime_total_bytes = qwen3_runtime_progress_bytes(*config_, kv_cache_tokens);
+    // 权重加载进度和运行时 buffer 分配进度合并成同一个总体进度，供服务端轮询展示。
     device_weight_buffer_ = qwen_layers_->to_cuda(
         cuda_config_,
         [this, runtime_total_bytes](size_t loaded_bytes, size_t total_bytes, const std::string& stage) {
@@ -639,6 +661,7 @@ void Qwen3Model::init_mem() {
       base::CUDADeviceAllocatorFactory::get_instance();
 
   tensor::Tensor input_tokens(base::DataType::kDataTypeInt32, 1, true, alloc_cpu);
+  // input_embeddings 在 prompt 阶段可能 reshape 成 [prompt_len, hidden_dim]，decode 阶段回到单 token。
   tensor::Tensor input_embeddings(base::DataType::kDataTypeFp32, 1, config_->hidden_dim_, true,
                                   alloc);
   tensor::Tensor sin_cache(base::DataType::kDataTypeFp32, config_->head_size_ * config_->seq_len_,
@@ -668,6 +691,7 @@ void Qwen3Model::init_mem() {
 
   CHECK(insert_buffer(ModelBufferType::kOutputRMSNorm, rms_output));
   CHECK(insert_buffer(ModelBufferType::kOutputMHA, out_mha));
+  // 这些中间结果生命周期不重叠，复用同一个 rms_output Buffer 降低显存占用。
   CHECK(insert_buffer(ModelBufferType::kW2Output, rms_output));
   CHECK(insert_buffer(ModelBufferType::kFFNRMSNorm, rms_output));
 
@@ -686,7 +710,7 @@ void Qwen3Model::init_mem() {
               2,
       "buffers.activations");
 
-  // kv cache
+  // KV cache 可按完整 seq_len 预分配，也可按 page 延迟扩容以降低长上下文启动显存。
   const size_t kv_stage_bytes = dims_byte_size(base::DataType::kDataTypeFp32,
                                                {static_cast<size_t>(config_->layer_num_),
                                                 static_cast<size_t>(kv_cache_tokens),
@@ -734,6 +758,7 @@ void Qwen3Model::init_mem() {
   // final forward output
   tensor::Tensor forward_output(base::DataType::kDataTypeFp32, config_->vocab_size_, true, alloc);
   if (device_type_ == base::DeviceType::kDeviceCUDA) {
+    // 采样器/调试路径可能需要 CPU logits，因此额外保留一块主机输出缓存。
     tensor::Tensor forward_output_cpu(base::DataType::kDataTypeFp32, config_->vocab_size_, true,
                                       alloc_cpu);
     CHECK(insert_buffer(ModelBufferType::kForwardOutputCPU, forward_output_cpu));
@@ -759,6 +784,7 @@ base::Status Qwen3Model::create_layers() {
   }
   create_nonparam_layers();
 
+  // 创建完所有层后立即做结构校验，尽早暴露导出顺序、层数或量化格式错误。
   if (!qwen_layers_->embedding_layer_) {
     return error::InternalError("Create the embedding layer for the llama model failed!");
   }
@@ -826,6 +852,7 @@ base::Status Qwen3Model::create_layers() {
 void Qwen3Model::attention_rms(int32_t layer_idx, const tensor::Tensor& input) const {
   CHECK(qwen_layers_ != nullptr);
   // attn rmsnorm
+  // 每层 block 的第一步：对残差流做 RMSNorm，结果供 Wq/Wk/Wv 共用。
   tensor::Tensor rmsnorm_output = get_buffer(ModelBufferType::kOutputRMSNorm);
   std::shared_ptr<op::Layer> rmsnorm_layer = qwen_layers_->rmsnorm_layers_.at(layer_idx);
   if (!rmsnorm_layer) {
@@ -840,7 +867,7 @@ void Qwen3Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_tens
   // kv cache
   tensor::Tensor query = this->get_buffer(ModelBufferType::kQuery);
   int32_t pos = pos_tensor.index<int32_t>(0);
-  // wq wk wv @ input
+  // key/value 直接写入当前 token 的 cache slot；后续 MHA 会读取历史所有 slot。
   auto [key, val] = slice_kv_cache(layer_idx, pos);
 
   // query
@@ -852,6 +879,7 @@ void Qwen3Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_tens
 
   // query norm
   auto query_norm = qwen_layers_->rmsnorm_layers_.at(layer_idx + 2 * config_->layer_num_ + 1);
+  // Qwen3 对每个 head 的 query/key 单独做 RMSNorm，因此先 reshape 成 [head, head_size]。
   query.reshape({(int32_t)query.size() / config_->head_size_, config_->head_size_});
   STATUS_CHECK(run_profiled("attn.q_norm", [&]() { return query_norm->forward(query, query); }));
   query.reshape({(int32_t)query.size()});
@@ -885,6 +913,7 @@ void Qwen3Model::attention_qkv(int32_t layer_idx, const tensor::Tensor& pos_tens
 base::Status Qwen3Model::predict(const tensor::Tensor& input, const tensor::Tensor& pos_tensor,
                                  bool is_prompt, int& next) const {
   if (use_paged_kv_cache()) {
+    // 分页 cache 必须在写入当前 token K/V 之前保证 page 存在。
     CHECK(ensure_paged_kv_cache(pos_tensor.index<int32_t>(0)));
   }
   auto status = forward(input, pos_tensor, next);
@@ -898,6 +927,7 @@ base::Status Qwen3Model::predict(const tensor::Tensor& input, const tensor::Tens
 void Qwen3Model::attention_mha(int32_t layer_idx, const tensor::Tensor& pos_tensor) const {
   CHECK(qwen_layers_ != nullptr);
   // mha
+  // MHA 读取当前位置之前已经写入的 query/key/value，并把结果写到 kOutputMHA。
   tensor::Tensor key_cache;
   tensor::Tensor val_cache;
 
@@ -911,6 +941,7 @@ void Qwen3Model::attention_mha(int32_t layer_idx, const tensor::Tensor& pos_tens
   CHECK_NE(mha, nullptr);
   if (use_paged_kv_cache()) {
     CHECK_NE(paged_kv_cache(), nullptr);
+    // 分页模式下 kernel 通过 page table 找历史 K/V；连续模式则直接传入整块 cache tensor。
     mha->set_paged_kv_cache(paged_kv_cache()->key_page_table_ptr(),
                             paged_kv_cache()->value_page_table_ptr(),
                             paged_kv_cache()->page_size(), true);
@@ -935,6 +966,7 @@ void Qwen3Model::attention_mha(int32_t layer_idx, const tensor::Tensor& pos_tens
 void Qwen3Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) const {
   CHECK(qwen_layers_ != nullptr);
   // residual add
+  // 第一处残差：attention 输出加回 block 输入，结果直接写回 input。
   CHECK_NE(qwen_layers_->add_layer_, nullptr)
       << "The add layer in the feedforward block is null pointer";
   STATUS_CHECK(run_profiled("ffn.residual_add1", [&]() {
@@ -962,6 +994,7 @@ void Qwen3Model::feed_forward(int32_t layer_idx, const tensor::Tensor& input) co
   STATUS_CHECK(run_profiled("ffn.w3", [&]() { return w3_layer->forward(ffn_norm_output, w3_ouput); }));
 
   // SwiGLU
+  // SwiGLU 使用 w1 作为 gate、w3 作为 up projection，激活后原地写回 w1_output。
   CHECK_NE(qwen_layers_->swiglu_layer_, nullptr)
       << "The swiglu layer in the feedforward block is null pointer";
   STATUS_CHECK(run_profiled("ffn.swiglu", [&]() {
@@ -986,6 +1019,7 @@ op::EmbeddingOutput Qwen3Model::embedding(const std::vector<int>& tokens) const 
   auto input_tokens = get_buffer(ModelBufferType::kInputTokens);
   auto input_embeddings = get_buffer(ModelBufferType::kInputEmbeddings);
   if (input_tokens.size() != tokens.size()) {
+    // prompt 长度变化时复用原 Buffer；容量不够才由 Tensor::reshape 触发重新分配。
     input_tokens.reshape({static_cast<int32_t>(tokens.size())});
     input_embeddings.reshape({static_cast<int32_t>(tokens.size()), config_->hidden_dim_});
   }
@@ -1007,6 +1041,7 @@ op::EmbeddingOutput Qwen3Model::embedding(const std::vector<int>& tokens) const 
 
 void Qwen3Model::cls_logits(const tensor::Tensor& input) const {
   CHECK(qwen_layers_ != nullptr);
+  // 最后一层 RMSNorm 后接 lm_head，输出 vocab_size 维 logits。
   const auto& norm = qwen_layers_->rmsnorm_layers_.at(2 * config_->layer_num_);
   CHECK_NE(norm, nullptr);
   STATUS_CHECK(run_profiled("output.rmsnorm", [&]() { return norm->forward(input, input); }));
@@ -1023,6 +1058,7 @@ int32_t Qwen3Model::post_processing(const tensor::Tensor& pos, bool is_prompt) c
 
   int32_t next = 0;
   if (is_prompt) {
+    // prompt prefill 阶段只填 KV cache，不从 logits 采样；外层会继续喂下一个 prompt token。
     next = -1;
   } else {
     const auto begin = std::chrono::steady_clock::now();

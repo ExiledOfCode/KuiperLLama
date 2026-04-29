@@ -1,3 +1,5 @@
+// 文件说明：RoPE kernel 实现，按 token 位置旋转 Q/K 向量。
+
 #include "rope_kernel.cuh"
 #include <cstdlib>
 namespace kernel {

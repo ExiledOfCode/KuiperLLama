@@ -1,3 +1,5 @@
+// 文件说明：矩阵乘 kernel 实现，覆盖普通、cuBLAS、量化和实验优化路径。
+
 #include "matmul_kernel.h"
 #include "../kernels_interface.h"
 #include "base/base.h"

@@ -1,3 +1,5 @@
+// 文件说明：DeepSeek-Qwen 模型适配声明，复用 Qwen 架构并处理蒸馏模型差异。
+
 #ifndef KUIPER_INCLUDE_MODEL_DEEPSEEK_QWEN_H_
 #define KUIPER_INCLUDE_MODEL_DEEPSEEK_QWEN_H_
 

@@ -1,3 +1,5 @@
+// 文件说明：CUDA 流与 cuBLAS 句柄配置对象，统一算子执行时的 GPU 上下文。
+
 #ifndef BLAS_HELPER_H
 #define BLAS_HELPER_H
 #include <cublas_v2.h>

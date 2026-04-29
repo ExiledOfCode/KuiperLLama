@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""文件说明：Qwen3 权重导出脚本，支持 BF16/INT8/AWQ 等运行时权重布局。"""
+
 """
 Export Qwen3 HuggingFace safetensors weights to KuiperLLama .bin format.
 

@@ -1,3 +1,5 @@
+// 文件说明：Llama3 模型实现，负责权重读取、Transformer block 执行和采样输出。
+
 #include "model/llama3.h"
 #include <cuda_runtime_api.h>
 #include <glog/logging.h>

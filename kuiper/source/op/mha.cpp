@@ -1,3 +1,5 @@
+// 文件说明：多头注意力算子实现，串联注意力打分、KV Cache 和输出聚合 kernel。
+
 #include "op/mha.h"
 #include "kernels/cpu/mha_kernel.h"
 #include "kernels/kernels_interface.h"
@@ -12,6 +14,7 @@ MultiHeadAttention::MultiHeadAttention(base::DeviceType device_type, int32_t lay
       seq_len_(seq_len),
       head_num_(head_num),
       head_size_(head_size) {
+  // 输入 4 保留给历史接口，当前 kernel 实际读取 query/score/key/value 四类输入或 page table。
   reset_input_size(5);
   reset_output_size(1);
 }
@@ -30,6 +33,7 @@ base::Status MultiHeadAttention::forward() {
   if (device_type_ == base::DeviceType::kDeviceCUDA) {
     CHECK(cuda_config_ != nullptr);
   }
+  // kernel 内部完成 QK 打分、softmax、加权 V 聚合，并兼容连续/分页两种 KV cache。
   kernel::get_mha_kernel(device_type_)(pos_, head_num_, layer_index_, seq_len_, kv_dim_, kv_mul_,
                                        head_size_, mha_out, query_tensor, score_tensor,
                                        key_cache_tensor, value_cache_tensor, key_page_table_,
@@ -44,6 +48,7 @@ void MultiHeadAttention::set_layer_idx(int32_t layer_idx) { this->layer_index_ =
 
 void MultiHeadAttention::set_paged_kv_cache(const void* key_page_table, const void* value_page_table,
                                             int32_t page_size, bool enabled) {
+  // page table 是 PagedKVCache 持有的指针数组；MHA 不拥有这些指针。
   key_page_table_ = key_page_table;
   value_page_table_ = value_page_table;
   page_size_ = page_size;
@@ -52,6 +57,7 @@ void MultiHeadAttention::set_paged_kv_cache(const void* key_page_table, const vo
 
 base::Status MultiHeadAttention::check() const {
   base::Status status;
+  // 分页模式下 key/value cache 通过 page table 访问，因此只校验 query 和 score scratch。
   const int32_t checked_input_num = paged_kv_cache_enabled_ ? 2 : 4;
   for (int32_t i = 0; i < checked_input_num; ++i) {
     // mha score tensor

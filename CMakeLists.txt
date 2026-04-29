@@ -1,3 +1,5 @@
+# 文件说明：KuiperLLama 顶层构建入口，配置 CUDA/C++ 标准、第三方库和子目录。
+
 cmake_minimum_required(VERSION 3.16)
 set(CMAKE_CUDA_ARCHITECTURES 86)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

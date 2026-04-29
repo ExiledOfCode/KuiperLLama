@@ -1,3 +1,5 @@
+// 文件说明：Qwen2 模型实现，执行嵌入、注意力、FFN、归一化和 logits 采样。
+
 #include "model/qwen2.h"
 #include <algorithm>
 #include <chrono>

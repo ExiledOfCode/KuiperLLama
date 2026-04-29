@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""文件说明：模型家族初始化脚本，下载或准备常用开源模型目录。"""
+
 from __future__ import annotations
 
 import argparse

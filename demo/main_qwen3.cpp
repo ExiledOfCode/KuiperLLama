@@ -1,3 +1,5 @@
+// 文件说明：Qwen3 demo 入口，支持推理跟踪、采样参数和服务端流式输出标记。
+
 #include <atomic>
 #include <algorithm>
 #include <cctype>
@@ -30,13 +32,14 @@ constexpr size_t kTraceTextPreviewLimit = 4096;
 constexpr int kTraceSamplingPreviewLimit = 128;
 
 struct GenerationResult {
-  std::string response;
-  int32_t steps = 0;
+  std::string response;  // 清理 stop marker 和重复行后的最终文本。
+  int32_t steps = 0;     // 实际执行的 token step 数，用于吞吐统计。
   bool cancelled = false;
-  std::string finish_reason = "unknown";
+  std::string finish_reason = "unknown";  // length/eos/cancelled/repeat 等结束原因。
 };
 
 struct ServeState {
+  // stdin_reader 线程负责解析控制帧，主线程负责串行推理；两者通过队列和条件变量交接 prompt。
   std::atomic<bool> exit_requested{false};
   std::atomic<bool> cancel_requested{false};
   std::condition_variable cv;
@@ -52,6 +55,7 @@ double elapsed_ms(const std::chrono::steady_clock::time_point& begin,
 bool is_continuation_byte(unsigned char value) { return (value & 0xC0U) == 0x80U; }
 
 std::string sanitize_utf8(const std::string& text) {
+  // 模型可能吐出半个 UTF-8 字符或非法 byte，这里替换为 '?'，避免 JSON/终端输出被破坏。
   std::string output;
   output.reserve(text.size());
 
@@ -119,6 +123,7 @@ std::string sanitize_utf8(const std::string& text) {
 }
 
 bool trace_enabled_from_env() {
+  // 默认打开 trace，前端可以通过 KLLM_TRACE_ENABLED=0 降低 stdout 事件量。
   const char* raw = std::getenv("KLLM_TRACE_ENABLED");
   if (raw == nullptr) {
     return true;
@@ -150,6 +155,7 @@ std::string truncate_text(const std::string& text, size_t limit) {
 }
 
 std::string escape_inline_text(const std::string& text, size_t limit = 48) {
+  // trace 中的 token preview 需要单行展示，因此折叠换行和制表符。
   const std::string safe_text = sanitize_utf8(text);
   std::string output;
   output.reserve(std::min(safe_text.size(), limit) + 8);
@@ -174,6 +180,7 @@ void emit_trace_json(const json& payload, bool enabled) {
   if (!enabled) {
     return;
   }
+  // 所有机器可解析事件都带固定前缀，服务端/前端按行读取时无需猜测普通文本边界。
   std::cout << "[TRACE]" << payload.dump() << std::endl;
   std::cout.flush();
 }
@@ -196,6 +203,7 @@ void emit_response_chunk_json(const std::string& text) {
 std::vector<std::string> build_token_pieces_preview(const model::Qwen3Model& model,
                                                     const std::vector<int32_t>& token_ids,
                                                     size_t limit) {
+  // 只 decode 前 limit 个 token，避免长上下文 prompt 产生过大的 trace payload。
   const size_t count = std::min(limit, token_ids.size());
   std::vector<std::string> pieces;
   pieces.reserve(count);
@@ -207,6 +215,7 @@ std::vector<std::string> build_token_pieces_preview(const model::Qwen3Model& mod
 }
 
 std::string remove_end_markers(const std::string& text) {
+  // 某些 tokenizer 会把特殊结束符 decode 成可见文本，最终响应中需要裁掉。
   std::string output = text;
   const std::vector<std::string> end_markers = {
       "<|im_end|>", "<|endoftext|>", "</s>", "<|end|>"};
@@ -221,6 +230,7 @@ std::string remove_end_markers(const std::string& text) {
 }
 
 std::string collapse_repeated_lines(const std::string& text) {
+  // 对 demo 输出做轻量后处理：短行重复太多通常是退化生成，保留有限次数即可。
   std::istringstream input(text);
   std::string line;
   std::vector<std::string> kept;
@@ -265,6 +275,7 @@ std::string collapse_repeated_lines(const std::string& text) {
 }
 
 void clear_tensor_buffer(const tensor::Tensor& tensor) {
+  // 服务模式下同一个模型处理多轮请求；清理运行时 buffer 可避免上轮残留影响调试和 trace。
   const auto buffer = tensor.get_buffer();
   if (!buffer || buffer->ptr() == nullptr || buffer->byte_size() == 0) {
     return;
@@ -277,6 +288,7 @@ void clear_tensor_buffer(const tensor::Tensor& tensor) {
 }
 
 void configure_rope_theta_env(const char* checkpoint_path, const char* tokenizer_path) {
+  // Qwen 系列 rope_theta 可能在 config.json 中；通过环境变量传给 RoPE kernel，保持 C++ 接口不变。
   namespace fs = std::filesystem;
   std::vector<fs::path> candidates;
   if (checkpoint_path != nullptr && *checkpoint_path != '\0') {
@@ -315,6 +327,7 @@ void configure_rope_theta_env(const char* checkpoint_path, const char* tokenizer
 
 void reset_generation_state(const model::Qwen3Model& model) {
   using model::ModelBufferType;
+  // 只重置运行时中间结果，不清理权重、RoPE cache 或 tokenizer。
   const std::vector<ModelBufferType> runtime_buffers = {
       ModelBufferType::kInputTokens,     ModelBufferType::kInputEmbeddings,
       ModelBufferType::kOutputRMSNorm,   ModelBufferType::kKeyCache,
@@ -336,6 +349,8 @@ void reset_generation_state(const model::Qwen3Model& model) {
 GenerationResult generate(const model::Qwen3Model& model, const std::string& sentence,
                           int max_new_tokens, bool emit_trace,
                           const std::atomic<bool>* cancel_requested = nullptr) {
+  // 生成流程分为五个 trace step：
+  // 1 tokenization，2 token id preview，3 transformer，4 sampling，5 decode。
   reset_generation_state(model);
   model.set_profile_enabled(emit_trace);
   const auto step1_begin = std::chrono::steady_clock::now();
@@ -349,6 +364,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
   const int32_t max_seq_len = model.max_seq_len();
   const int32_t requested_max_new_tokens = std::max(1, max_new_tokens);
   if (max_seq_len > 0 && prompt_len >= max_seq_len) {
+    // prompt 已经占满上下文时直接返回中文错误，避免后续 KV cache 越界。
     std::ostringstream error;
     error << "当前请求超过模型上下文长度：prompt_tokens=" << prompt_len
           << ", max_token=" << requested_max_new_tokens << ", seq_len=" << max_seq_len
@@ -357,6 +373,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
   }
   int32_t effective_max_new_tokens = requested_max_new_tokens;
   if (max_seq_len > 0 && prompt_len + requested_max_new_tokens > max_seq_len) {
+    // 保守截断生成长度，使 prompt + decode token 始终落在模型 seq_len 内。
     effective_max_new_tokens = std::max(1, max_seq_len - prompt_len);
     std::fprintf(stderr,
                  "[WARN] max_new_tokens clamped from %d to %d because prompt_tokens=%d and "
@@ -428,9 +445,11 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
     }
     pos_tensor.index<int32_t>(0) = pos;
     if (pos < prompt_len - 1) {
+      // prefill：喂入 prompt 中当前位置的 embedding，只更新 KV cache，不采样。
       tensor::Tensor input = model.fill_input(pos_tensor, prompt_embedding, is_prompt);
       model.predict(input, pos_tensor, is_prompt, next);
     } else {
+      // decode：把上一轮采样得到的 token 重新 embedding，再预测下一个 token。
       is_prompt = false;
       tokens = std::vector<int32_t>{next};
       const auto& token_embedding = model.embedding(tokens);
@@ -474,6 +493,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
         same_token_run = 1;
       }
       if (same_token_run >= 24) {
+        // 防止 argmax 或坏权重导致同一个 token 无限重复。
         finish_reason = "same_token_repeat";
         break;
       }
@@ -492,6 +512,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
 
       constexpr int kRepeatWindow = 12;
       if (words.size() >= static_cast<size_t>(prompt_len + kRepeatWindow * 2)) {
+        // 检测最近两个固定窗口是否完全相同，拦截循环句段。
         bool repeated = true;
         auto end_it = words.end();
         for (int i = 0; i < kRepeatWindow; ++i) {
@@ -508,6 +529,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
 
       const std::string token_piece = sanitize_utf8(model.decode(std::vector<int32_t>{next}));
       if (!token_piece.empty()) {
+        // 服务端可边生成边消费 chunk，最终完整响应仍由 print_result 输出。
         emit_response_chunk_json(token_piece);
       }
     }
@@ -522,6 +544,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
   std::vector<int32_t> response_tokens;
   const auto step5_begin = std::chrono::steady_clock::now();
   if (words.size() > static_cast<size_t>(prompt_len)) {
+    // words 同时包含 prompt 和生成 token，最终响应只 decode prompt 之后的部分。
     response_tokens = std::vector<int32_t>(words.begin() + prompt_len, words.end());
     response = collapse_repeated_lines(remove_end_markers(sanitize_utf8(model.decode(response_tokens))));
   }
@@ -581,6 +604,7 @@ GenerationResult generate(const model::Qwen3Model& model, const std::string& sen
 }
 
 bool init_model(model::Qwen3Model& model) {
+  // 初始化阶段把加载进度同步输出给调用方，便于前端显示权重/缓存准备进度。
   model.set_load_progress_callback(
       [](size_t loaded_bytes, size_t total_bytes, const std::string& stage) {
         emit_load_progress_json(loaded_bytes, total_bytes, stage);
@@ -594,6 +618,7 @@ bool init_model(model::Qwen3Model& model) {
 
   auto init_status = model.init(device_type);
   if (!init_status && device_type == base::DeviceType::kDeviceCUDA) {
+    // demo 允许 CUDA 初始化失败后回退 CPU，便于没有 GPU 的开发环境继续验证流程。
     std::fprintf(stderr, "[WARN] CUDA init failed, fallback to CPU.\n");
     init_status = model.init(base::DeviceType::kDeviceCPU);
   }
@@ -639,6 +664,7 @@ void print_result(const GenerationResult& result, double duration_sec, bool prin
 
 int run_single_shot(const char* checkpoint_path, const char* tokenizer_path, const std::string& prompt,
                     int max_steps, float temperature) {
+  // 单次模式：启动、加载、生成、打印统计后退出。
   configure_rope_theta_env(checkpoint_path, tokenizer_path);
   model::Qwen3Model model(base::TokenizerType::kEncodeBpe, tokenizer_path, checkpoint_path, false);
   model.set_sampling_temperature(temperature);
@@ -657,6 +683,7 @@ int run_single_shot(const char* checkpoint_path, const char* tokenizer_path, con
 
 int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_steps,
               float temperature) {
+  // 服务模式：模型常驻内存，stdin/stdout 使用简单帧协议和上层服务通信。
   configure_rope_theta_env(checkpoint_path, tokenizer_path);
   model::Qwen3Model model(base::TokenizerType::kEncodeBpe, tokenizer_path, checkpoint_path, false);
   model.set_sampling_temperature(temperature);
@@ -670,6 +697,7 @@ int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_s
 
   ServeState state;
   std::thread stdin_reader([&state]() {
+    // 单独线程阻塞读取 stdin，主线程即使在推理中也能收到 CANCEL/EXIT 信号。
     std::string line;
     while (std::getline(std::cin, line)) {
       if (line == "[EXIT]") {
@@ -686,6 +714,7 @@ int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_s
         continue;
       }
 
+      // prompt 允许多行内容，直到 PROMPT_END 结束。
       state.cancel_requested.store(false);
       std::string prompt;
       bool has_end = false;
@@ -721,6 +750,7 @@ int run_serve(const char* checkpoint_path, const char* tokenizer_path, int max_s
   while (true) {
     std::string prompt;
     {
+      // 主线程串行消费 prompt，避免一个 Qwen3Model 实例被并发调用。
       std::unique_lock<std::mutex> lock(state.mutex);
       state.cv.wait(lock, [&state]() { return state.exit_requested.load() || !state.prompts.empty(); });
       if (state.prompts.empty()) {

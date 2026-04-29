@@ -1,3 +1,5 @@
+"""文件说明：Qwen2 权重导出脚本，将 safetensors 权重写入运行时二进制格式。"""
+
 """
 This script has functions and utilties for model export.
 Basically, we have a bunch of versions of the model, and we

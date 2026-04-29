@@ -1,3 +1,5 @@
+// 文件说明：Unicode 工具实现，为 tokenizer 的字符类别和编码转换提供支持。
+
 #if defined(_MSC_VER)
 #define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
 #endif

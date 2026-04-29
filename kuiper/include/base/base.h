@@ -1,3 +1,5 @@
+// 文件说明：基础类型和状态码定义，集中描述设备、数据类型、模型类型和错误对象。
+
 #ifndef KUIPER_INCLUDE_BASE_BASE_H_
 #define KUIPER_INCLUDE_BASE_BASE_H_
 #include <glog/logging.h>

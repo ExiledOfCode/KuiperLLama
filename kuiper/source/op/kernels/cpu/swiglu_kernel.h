@@ -1,3 +1,5 @@
+// 文件说明：SwiGLU kernel 实现，融合 SiLU 激活和门控乘法。
+
 #ifndef LLAMA_INFER_SWIGLU_KERNEL_H
 #define LLAMA_INFER_SWIGLU_KERNEL_H
 #include "tensor/tensor.h"

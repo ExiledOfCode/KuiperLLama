@@ -1,3 +1,5 @@
+// 文件说明：多头注意力 kernel 实现，计算 QK softmax 和 V 加权求和。
+
 #include "../cpu/mha_kernel.h"
 #include <cuda_runtime_api.h>
 #include "../kernels_interface.h"

@@ -1,3 +1,5 @@
+"""文件说明：Qwen3 导出模型描述模块，定义权重布局和二进制写入顺序。"""
+
 """
 Qwen3 Model Implementation
 Author: Bound

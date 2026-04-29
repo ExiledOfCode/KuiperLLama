@@ -1,3 +1,5 @@
+// 文件说明：CPU allocator 实现，负责主机内存的申请、释放和拷贝。
+
 #include <glog/logging.h>
 #include <cstdlib>
 #include "base/alloc.h"
@@ -15,6 +17,7 @@ void* CPUDeviceAllocator::allocate(size_t byte_size) const {
     return nullptr;
   }
 #ifdef KUIPER_HAVE_POSIX_MEMALIGN
+  // 大于 1KB 的主机 buffer 使用更高对齐，有利于 BLAS/SIMD 和 CUDA pageable copy。
   void* data = nullptr;
   const size_t alignment = (byte_size >= size_t(1024)) ? size_t(32) : size_t(16);
   int status = posix_memalign((void**)&data,

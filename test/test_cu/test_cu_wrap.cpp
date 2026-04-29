@@ -1,3 +1,5 @@
+// 文件说明：单元测试文件，验证 test_cu_wrap 相关模块的正确性。
+
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <armadillo>

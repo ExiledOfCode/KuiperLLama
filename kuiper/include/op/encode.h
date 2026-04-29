@@ -1,3 +1,5 @@
+// 文件说明：Tokenizer 编码层声明，将文本 prompt 转换为模型输入 token。
+
 #ifndef KUIPER_INCLUDE_OP_ENCODE_H_
 #define KUIPER_INCLUDE_OP_ENCODE_H_
 #include "layer.h"
