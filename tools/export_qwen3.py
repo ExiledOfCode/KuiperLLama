@@ -2,7 +2,7 @@
 """文件说明：Qwen3 权重导出脚本，支持 BF16/INT8/AWQ 等运行时权重布局。"""
 
 """
-Export Qwen3 HuggingFace safetensors weights to KuiperLLama .bin format.
+Export Qwen3 HuggingFace safetensors weights to W_InferEngine .bin format.
 
 Usage examples:
   python3 tools/export_qwen3.py models/Qwen3-1.7B/Qwen3-1.7B.bin --hf=models/Qwen3-1.7B
@@ -366,7 +366,7 @@ def export_qwen3_bin(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Export Qwen3 HuggingFace safetensors to KuiperLLama .bin"
+        description="Export Qwen3 HuggingFace safetensors to W_InferEngine .bin"
     )
     parser.add_argument(
         "filepath",

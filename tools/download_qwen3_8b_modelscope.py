@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help="Local output directory, default: KuiperLLama/models/Qwen3-8B.",
+        help="Local output directory, default: W_InferEngine/models/Qwen3-8B.",
     )
     return parser.parse_args()
 

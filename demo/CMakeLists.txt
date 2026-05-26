@@ -29,7 +29,12 @@ function(configure_llama_demo_target target_name source_file)
     find_package(nlohmann_json REQUIRED)
     ensure_re2_target()
     target_link_libraries(${target_name} absl::base absl::strings re2::re2 nlohmann_json::nlohmann_json)
-    set_target_properties(${target_name} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+    set_target_properties(${target_name} PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        BUILD_RPATH "$ORIGIN/../lib"
+        INSTALL_RPATH "$ORIGIN/../lib"
+    )
 endfunction()
 
 function(configure_qwen2_demo_target target_name source_file)
@@ -40,7 +45,12 @@ function(configure_qwen2_demo_target target_name source_file)
     ensure_re2_target()
     target_link_libraries(${target_name} llama_qwen2)
     target_link_libraries(${target_name} absl::base absl::strings re2::re2 nlohmann_json::nlohmann_json)
-    set_target_properties(${target_name} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+    set_target_properties(${target_name} PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        BUILD_RPATH "$ORIGIN/../lib"
+        INSTALL_RPATH "$ORIGIN/../lib"
+    )
 endfunction()
 
 add_executable(llama_infer main.cpp)
@@ -61,7 +71,12 @@ if (LLAMA3_SUPPORT)
     configure_llama_demo_target(smollm_infer main_smollm.cpp)
     configure_llama_demo_target(deepseek_llama_infer main_deepseek_llama.cpp)
 endif ()
-set_target_properties(llama_infer PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+set_target_properties(llama_infer PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    BUILD_RPATH "$ORIGIN/../lib"
+    INSTALL_RPATH "$ORIGIN/../lib"
+)
 
 if (QWEN2_SUPPORT)
     message(STATUS "LINK QWEN2 SUPPORT")
@@ -72,7 +87,13 @@ if (QWEN2_SUPPORT)
     ensure_re2_target()
     target_link_libraries(qwen_infer llama_qwen2)
     target_link_libraries(qwen_infer absl::base absl::strings re2::re2 nlohmann_json::nlohmann_json)
-    set_target_properties(qwen_infer PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+    set_target_properties(qwen_infer PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        BUILD_RPATH "$ORIGIN/../lib"
+        INSTALL_RPATH "$ORIGIN/../lib"
+    )
+
     configure_qwen2_demo_target(deepseek_qwen_infer main_deepseek_qwen.cpp)
 endif ()
 
@@ -85,5 +106,10 @@ if (QWEN3_SUPPORT)
     ensure_re2_target()
     target_link_libraries(qwen3_infer llama_qwen3)
     target_link_libraries(qwen3_infer absl::base absl::strings re2::re2 nlohmann_json::nlohmann_json)
-    set_target_properties(qwen3_infer PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+    set_target_properties(qwen3_infer PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        BUILD_RPATH "$ORIGIN/../lib"
+        INSTALL_RPATH "$ORIGIN/../lib"
+    )
 endif ()

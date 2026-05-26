@@ -2,7 +2,7 @@
 """文件说明：Qwen3 AWQ 导出脚本，将 INT4 量化权重和尺度零点写入运行时格式。"""
 
 """
-Export Qwen3 HuggingFace/ModelScope safetensors weights to KuiperLLama AWQ INT4 .bin.
+Export Qwen3 HuggingFace/ModelScope safetensors weights to W_InferEngine AWQ INT4 .bin.
 
 This is a weight-only W4A16 path:
   - Linear weights are packed as uint4 pairs in row-major order.
@@ -381,7 +381,7 @@ def export_qwen3_awq(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Export Qwen3 AWQ INT4 .bin for KuiperLLama.")
+    parser = argparse.ArgumentParser(description="Export Qwen3 AWQ INT4 .bin for W_InferEngine.")
     parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--max-seq-len", type=int, default=8192)

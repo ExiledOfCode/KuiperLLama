@@ -79,5 +79,5 @@ RUN git clone --depth 1 --branch v${SENTENCEPIECE_VERSION} ${SENTENCEPIECE_GIT_R
     rm -rf /sentencepiece-${SENTENCEPIECE_VERSION}
 
 
-WORKDIR /workspaces/KuiperLLama
+WORKDIR /workspaces/W_InferEngine
 CMD ["bash"]

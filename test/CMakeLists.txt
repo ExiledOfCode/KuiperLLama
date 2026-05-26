@@ -5,7 +5,10 @@ find_package(GTest REQUIRED)
 find_package(glog REQUIRED)
 
 set(link_ext_lib glog::glog GTest::gtest)
-aux_source_directory(../test DIR_TEST)
+set(DIR_TEST
+  ../test/test_main.cpp
+  ../test/utils.cu
+)
 
 aux_source_directory(../test/test_cu DIR_TEST_CU)
 aux_source_directory(../test/test_op DIR_TEST_OP)
@@ -26,3 +29,12 @@ target_link_libraries(test_llm llama)
 
 set_target_properties(test_llm PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_target_properties(test_llm PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+add_executable(bench_operator_micro bench_operator_micro.cpp)
+target_link_libraries(bench_operator_micro glog::glog pthread cudart cublas)
+target_include_directories(bench_operator_micro PUBLIC ${glog_INCLUDE_DIR})
+target_include_directories(bench_operator_micro PUBLIC ../kuiper/include)
+target_link_directories(bench_operator_micro PUBLIC ${PROJECT_SOURCE_DIR}/lib)
+target_link_libraries(bench_operator_micro llama)
+set_target_properties(bench_operator_micro PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_target_properties(bench_operator_micro PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

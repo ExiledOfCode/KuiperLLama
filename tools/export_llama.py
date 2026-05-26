@@ -1,4 +1,4 @@
-"""文件说明：LLaMA 权重导出脚本，将 HuggingFace 权重转换为 KuiperLLama 二进制格式。"""
+"""文件说明：LLaMA 权重导出脚本，将 HuggingFace 权重转换为 W_InferEngine 二进制格式。"""
 
 """
 This script has functions and utilties for model export.
