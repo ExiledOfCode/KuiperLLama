@@ -81,9 +81,9 @@ if __name__ == "__main__":
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     parser = argparse.ArgumentParser(description="Export Qwen3 model weights to .pth file")
-    parser.add_argument("--model_name", type=str, default="/home/fss/qwen3",
+    parser.add_argument("--model_name", type=str, default="./models/Qwen3-1.7B",
                        help="HuggingFace model name or path (default: Qwen/Qwen3-0.6B)")
-    parser.add_argument("--output_file", type=str, default="/mnt/c/Users/hello/qwen3_0.6b_weights.pth",
+    parser.add_argument("--output_file", type=str, default="./qwen3_0.6b_weights.pth",
                        help="Output .pth file path (default: qwen3_0.6b_weights.pth)")
     args = parser.parse_args()
 

@@ -18,17 +18,17 @@
 #include "tensor/tensor.h"
 
 namespace kernel {
-void matmul_kernel_cu_kuiper(const tensor::Tensor& input, const tensor::Tensor& weight,
-                             const tensor::Tensor& output, float scale,
-                             const CudaConfig* config);
+void matmul_kernel_cu_src(const tensor::Tensor& input, const tensor::Tensor& weight,
+                         const tensor::Tensor& output, float scale,
+                         const CudaConfig* config);
 void matmul_kernel_cu_cublas(const tensor::Tensor& input, const tensor::Tensor& weight,
                              const tensor::Tensor& output, float scale,
                              const CudaConfig* config);
 void matmul_kernel_cu_lab_cp_async(const tensor::Tensor& input, const tensor::Tensor& weight,
                                    const tensor::Tensor& output, float scale,
                                    const CudaConfig* config);
-void rmsnorm_kernel_cu_dim_kuiper(const tensor::Tensor& input, const tensor::Tensor& weight,
-                                  const tensor::Tensor& output, int32_t dim, void* stream);
+void rmsnorm_kernel_cu_dim_src(const tensor::Tensor& input, const tensor::Tensor& weight,
+                              const tensor::Tensor& output, int32_t dim, void* stream);
 void rmsnorm_kernel_cu_lab(const tensor::Tensor& input, const tensor::Tensor& weight,
                            const tensor::Tensor& output, int rows, int cols, void* stream);
 }  // namespace kernel
@@ -84,7 +84,7 @@ double bench_matmul_version(const std::string& version, const tensor::Tensor& in
                             kernel::CudaConfig* config, int warmup, int iters) {
   auto run_once = [&]() {
     if (version == "original") {
-      kernel::matmul_kernel_cu_kuiper(input, weight, output, 1.0f, config);
+      kernel::matmul_kernel_cu_src(input, weight, output, 1.0f, config);
     } else if (version == "cublas") {
       kernel::matmul_kernel_cu_cublas(input, weight, output, 1.0f, config);
     } else if (version == "lab_cp_async") {
@@ -120,7 +120,7 @@ double bench_rmsnorm_version(const std::string& version, const tensor::Tensor& i
                              int cols, kernel::CudaConfig* config, int warmup, int iters) {
   auto run_once = [&]() {
     if (version == "original") {
-      kernel::rmsnorm_kernel_cu_dim_kuiper(input, weight, output, 1, config->stream);
+      kernel::rmsnorm_kernel_cu_dim_src(input, weight, output, 1, config->stream);
     } else if (version == "warp_reduce") {
       kernel::rmsnorm_kernel_cu_lab(input, weight, output, rows, cols, config->stream);
     } else {

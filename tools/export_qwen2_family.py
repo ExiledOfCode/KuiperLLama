@@ -197,7 +197,7 @@ def export_qwen2_family(model_dir: Path, output_path: Path, max_seq_len: int, dt
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Export Qwen2-compatible HuggingFace weights to Kuiper .bin")
+    parser = argparse.ArgumentParser(description="Export Qwen2-compatible HuggingFace weights to WInfer .bin")
     parser.add_argument("--model-dir", type=Path, required=True, help="Local model directory with config + safetensors.")
     parser.add_argument("--output", type=Path, required=True, help="Output .bin file path.")
     parser.add_argument("--max-seq-len", type=int, default=4096, help="Exported max_seq_len in header.")

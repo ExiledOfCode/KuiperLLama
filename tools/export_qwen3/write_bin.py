@@ -24,10 +24,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run Qwen3 in interactive mode.")
     parser.add_argument("-m", "--max_length", type=int, default=128, help="Maximum length of the generated output.")
     parser.add_argument("-t", "--deep_think", action='store_true', help="Enable thinking mode")
-    parser.add_argument("-p", "--checkpoint", type=str, default="/mnt/c/Users/hello/qwen3_0.6b_weights.pth",
+    parser.add_argument("-p", "--checkpoint", type=str, default="./qwen3_0.6b_weights.pth",
                         help="Model checkpoint file path.")
     parser.add_argument("-d", "--device", type=str, default="cpu", help="Running model on which device")
-    parser.add_argument("-n", "--model_name", type=str, default="/home/fss/qwen3", help="Which official model to use")
+    parser.add_argument("-n", "--model_name", type=str, default="./models/Qwen3-1.7B", help="Which official model to use")
     return parser.parse_args()
 
 

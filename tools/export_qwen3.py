@@ -10,7 +10,7 @@ Usage examples:
   python3 tools/export_qwen3.py --output models/Qwen3-4B-Thinking-2507/Qwen3-4B-Thinking-2507-int8.bin --model-dir=models/Qwen3-4B-Thinking-2507 --dtype=int8 --max-seq-len=8192 --overwrite
   python3 tools/export_qwen3.py --output models/Qwen3-1.7B/Qwen3-1.7B.bin --model-dir=models/Qwen3-1.7B
 
-Output weight order follows `kuiper/source/model/qwen3.cpp`:
+Output weight order follows `src/source/model/qwen3.cpp`:
   1) input_layernorm (all layers)
   2) post_attention_layernorm (all layers)
   3) final norm
@@ -162,7 +162,7 @@ def build_weight_order(config: Dict) -> List[str]:
     names.extend([f"model.layers.{i}.mlp.down_proj.weight" for i in range(n_layers)])
     names.extend([f"model.layers.{i}.mlp.up_proj.weight" for i in range(n_layers)])
 
-    # lm_head is required by Kuiper qwen3 loader; for tied embeddings we reuse embed_tokens.
+    # lm_head is required by WInfer qwen3 loader; for tied embeddings we reuse embed_tokens.
     names.append("lm_head.weight")
     return names
 
